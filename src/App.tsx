@@ -23,6 +23,9 @@ import { useTranslate } from './hooks/useTranslate';
 import { clearDraft, loadDraft, saveDraft } from './lib/draft';
 import { useCardStore } from './state/cardStore';
 
+/** Shown in the footer to satisfy AGPL-3.0 section 13. */
+const SOURCE_URL = 'https://github.com/lchanc3/cceditor-plus';
+
 const LONG_FIELDS = {
   description: { label: '角色描述', hint: '角色的外貌、背景與核心設定。通常是最重要的欄位。' },
   personality: { label: '性格設定', hint: '個性特質的摘要。' },
@@ -320,8 +323,24 @@ export default function App() {
         )}
       </main>
 
+      {/*
+        AGPL-3.0 section 13 requires that anyone interacting with this app over a
+        network be offered its source, so the link below is a licence obligation,
+        not decoration. Keep it visible on every page.
+      */}
       <footer className="border-t border-line px-4 py-6 text-center text-xs text-dim/60 sm:px-6">
         <p>CCEditor+ · 角色卡在你的瀏覽器內處理，不會上傳到任何伺服器。</p>
+        <p className="mt-2">
+          <a
+            href={SOURCE_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="underline underline-offset-2 hover:text-gold"
+          >
+            原始碼
+          </a>
+          {' · AGPL-3.0'}
+        </p>
       </footer>
 
       {/* Mobile action bar: export is the one thing that must always be reachable. */}

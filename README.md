@@ -82,3 +82,12 @@ src/
   state/       卡片 reducer
 tests/         Vitest；fixtures/local/ 放你自己的卡
 ```
+
+## 授權
+
+[AGPL-3.0-only](LICENSE)。
+
+若你修改本專案並將其部署為網路服務，AGPL 第 13 條要求你必須讓使用該服務的人
+也能取得你修改後的原始碼 —— 這也是為什麼頁尾有一個永遠可見的原始碼連結。
+
+`reference/` 內的 lenML 倉庫僅作為規範對照，**本專案未引用其任何程式碼**。
