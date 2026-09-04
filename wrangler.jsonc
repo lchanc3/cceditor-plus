@@ -1,0 +1,14 @@
+{
+  // Cloudflare Workers with static assets. Deploy with:
+  //   npm run build && npx wrangler deploy
+  // The same output also works on Cloudflare Pages (build `npm run build`,
+  // output directory `dist`) with no changes to this file.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cceditor-plus",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./dist",
+    // The app is a single page; anything unmatched should still render it.
+    "not_found_handling": "single-page-application"
+  }
+}

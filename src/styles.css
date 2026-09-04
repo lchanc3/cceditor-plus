@@ -1,0 +1,118 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Noto Sans TC', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'Noto Serif TC', Georgia, serif;
+
+  --color-gold: #d4af37;
+  --color-gold-dim: #8a7226;
+  --color-ink: #050505;
+  --color-surface: #0b0b0c;
+  --color-field: #141416;
+  --color-line: #232326;
+  --color-line-bright: #34343a;
+  --color-dim: #8a8a92;
+  --color-body: #e6e6e8;
+}
+
+/*
+ * Tailwind wraps `hover:` in `@media (hover: hover)`, so a control styled
+ * `opacity-0 group-hover:opacity-100` is permanently invisible on a phone.
+ * That is exactly how the previous build hid its delete and translate buttons
+ * from every touch user. This variant lets us invert the default: visible
+ * always, and only revealed-on-hover where hovering actually exists.
+ */
+@custom-variant can-hover (@media (hover: hover) and (pointer: fine));
+
+/*
+ * `@utility` rather than `@layer components`, because only real utilities can be
+ * pulled into another rule with `@apply`.
+ */
+
+/** Minimum comfortable touch target, per the platform guidelines. */
+@utility tap {
+  @apply min-h-11 min-w-11;
+}
+
+@utility btn-base {
+  @apply inline-flex min-h-11 items-center justify-center gap-2 rounded px-4 py-2.5 text-sm
+         font-bold transition-all disabled:cursor-not-allowed disabled:opacity-40;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-ink text-body font-sans antialiased;
+    /* Respect the notch / home indicator on phones. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-serif;
+  }
+
+  /*
+   * iOS zooms the page in when a focused input has a font-size under 16px.
+   * Every text control here is at least that big.
+   */
+  input,
+  textarea,
+  select,
+  button {
+    font-size: max(1rem, 16px);
+  }
+
+  ::selection {
+    @apply bg-gold/30;
+  }
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded border border-line bg-field px-3 py-2.5 text-body outline-none
+           transition-colors placeholder:text-dim/60 focus:border-gold;
+  }
+
+  .label {
+    @apply mb-2 block text-xs font-bold tracking-widest text-gold/80 uppercase;
+  }
+
+  .btn-primary {
+    @apply btn-base bg-gold text-ink hover:brightness-110 active:brightness-95;
+  }
+
+  .btn-ghost {
+    @apply btn-base border border-line text-dim hover:border-gold hover:text-gold;
+  }
+
+  .btn-quiet {
+    @apply inline-flex min-h-11 items-center justify-center gap-1.5 rounded px-2.5 py-1.5 text-xs
+           font-bold text-dim transition-colors hover:text-gold disabled:opacity-40;
+  }
+
+  .panel {
+    @apply rounded-lg border border-line bg-surface;
+  }
+
+  /* Horizontal scrollers must not bleed into the page's own scroll. */
+  .scroll-x {
+    @apply overflow-x-auto overscroll-x-contain;
+    scrollbar-width: thin;
+    scroll-snap-type: x proximity;
+  }
+
+  .scroll-x::-webkit-scrollbar {
+    height: 3px;
+  }
+
+  .scroll-x::-webkit-scrollbar-thumb {
+    @apply rounded bg-line-bright;
+  }
+}

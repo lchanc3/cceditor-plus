@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+coverage/
+.DS_Store
+*.log
+
+.env*
+!.env.example
+
+# Read-only clones of the lenML repos (AGPL-3.0), kept on disk as spec
+# reference only. Nothing in src/ imports from them, and they are deliberately
+# not part of this repository -- see README.
+reference/
+
+# The original Google AI Studio project this replaced. Kept locally for
+# comparison; not part of this repository.
+sillycard-editor-main/
+
+# Drop your own character cards here to have them round-trip tested.
+tests/fixtures/local/*
+!tests/fixtures/local/.gitkeep
+
+.vercel/
+.wrangler/
