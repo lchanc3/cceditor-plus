@@ -17,6 +17,7 @@ import {
   decodeTranslationMeta,
   duplicateTargets,
   encodeTranslationMeta,
+  glossaryReadiness,
   scanUsage,
   termsInText,
   translatedKeysFor,
@@ -33,6 +34,7 @@ import { GreetingsEditor } from './components/GreetingsEditor';
 import { LorebookEditor } from './components/LorebookEditor';
 import { SettingsDialog } from './components/SettingsDialog';
 import { TabBar, TabDef } from './components/TabBar';
+import { TranslateDialog } from './components/TranslateDialog';
 import { RunReport, TranslateReport } from './components/TranslateReport';
 import { Banner } from './components/ui';
 import { CARD_KEY, useTranslate } from './hooks/useTranslate';
@@ -52,6 +54,15 @@ const LONG_FIELDS = {
 } as const;
 
 type LongField = keyof typeof LONG_FIELDS;
+
+/** Stands in until a card is loaded; the dialog that reads it needs one. */
+const NO_GLOSSARY = {
+  terms: 0,
+  decided: 0,
+  undecided: 0,
+  entriesWithKeys: 0,
+  entriesCovered: 0,
+};
 
 /** Everything the glossary tab needs that is not task state. */
 type GlossaryPanel = Omit<
@@ -82,6 +93,9 @@ export default function App() {
   const [report, setReport] = useState<RunReport | null>(null);
   /** Element id a jump is heading for, cleared once the scroll has happened. */
   const [pendingScroll, setPendingScroll] = useState<string | null>(null);
+  const [translateOpen, setTranslateOpen] = useState(false);
+  /** Outcome of the last "apply glossary to lorebook keys" action. */
+  const [keysNotice, setKeysNotice] = useState('');
 
   const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
@@ -258,8 +272,9 @@ export default function App() {
   );
 
   const translateWholeCard = useCallback(
-    async (only?: string[]) => {
-      if (!model) return;
+    async (only: string[]) => {
+      if (!model || only.length === 0) return;
+      setTranslateOpen(false);
 
       // Captured before anything is written, since translating in place
       // destroys the source the checks need.
@@ -314,6 +329,11 @@ export default function App() {
     [model, glossary],
   );
   const conflicts = useMemo(() => duplicateTargets(glossary), [glossary]);
+  const sections = useMemo(() => (model ? cardSections(model.fields) : []), [model]);
+  const readiness = useMemo(
+    () => (model ? glossaryReadiness(model.fields, glossary) : NO_GLOSSARY),
+    [model, glossary],
+  );
 
   const runExtract = useCallback(async () => {
     if (!model) return;
@@ -347,6 +367,39 @@ export default function App() {
     },
     [dispatch, state.glossary.styleNotes],
   );
+
+  /**
+   * Push agreed translations into the lorebook keys without retranslating.
+   *
+   * Whole-card translation already does this, but a card translated before the
+   * glossary existed has no other way to get it — and without it those entries
+   * keep only their source-language keys and never fire again.
+   */
+  const applyKeysToLorebook = useCallback(() => {
+    const entries = model?.fields.character_book?.entries ?? [];
+    const terms = state.glossary.glossary;
+    let added = 0;
+    let touched = 0;
+
+    entries.forEach((entry, index) => {
+      const keys = translatedKeysFor(entry.keys, terms);
+      const secondary = translatedKeysFor(entry.secondary_keys ?? [], terms);
+      if (keys.length === 0 && secondary.length === 0) return;
+
+      touched++;
+      added += keys.length + secondary.length;
+      if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
+      if (secondary.length > 0) {
+        dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
+      }
+    });
+
+    setKeysNotice(
+      added === 0
+        ? '沒有可以附加的關鍵字——現有的關鍵字在詞彙表裡都還沒有決定譯名。'
+        : `已為 ${touched} 條世界書附加 ${added} 個譯詞關鍵字。`,
+    );
+  }, [dispatch, model, state.glossary.glossary]);
 
   const exportGlossary = useCallback(() => {
     const encoded = encodeTranslationMeta(state.glossary);
@@ -457,7 +510,7 @@ export default function App() {
                 </button>
               ) : (
                 <button
-                  onClick={() => void translateWholeCard()}
+                  onClick={() => setTranslateOpen(true)}
                   className="btn-ghost hidden px-3 sm:inline-flex"
                 >
                   <Languages className="size-4" />
@@ -585,6 +638,8 @@ export default function App() {
                     onStyleNotes: (notes) => dispatch({ type: 'glossary.setStyleNotes', notes }),
                     onImport: importGlossary,
                     onExport: exportGlossary,
+                    onApplyKeys: applyKeysToLorebook,
+                    keysNotice,
                     onJump: jumpToPath,
                   }}
                 />
@@ -641,6 +696,20 @@ export default function App() {
           setSettingsOpen(false);
         }}
       />
+
+      {model && (
+        <TranslateDialog
+          open={translateOpen}
+          sections={sections}
+          readiness={readiness}
+          onClose={() => setTranslateOpen(false)}
+          onStart={(paths) => void translateWholeCard(paths)}
+          onOpenGlossary={() => {
+            setTranslateOpen(false);
+            setActiveTab('glossary');
+          }}
+        />
+      )}
 
       {model && (
         <ExportDialog

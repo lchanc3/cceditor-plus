@@ -19,9 +19,11 @@ import {
   GlossaryTerm,
   cardSections,
   duplicateTargets,
+  glossaryReadiness,
   mergeTerms,
   parseSectionPath,
   scanUsage,
+  sectionGroup,
   seedTerms,
   termsInText,
   translatedKeysFor,
@@ -192,6 +194,79 @@ describe('seedTerms', () => {
 
   it('ignores tags, which classify the card rather than describe its world', () => {
     expect(seedTerms(card({ tags: ['fantasy', 'NSFW'] }))).toEqual([]);
+  });
+});
+
+describe('sectionGroup', () => {
+  it('separates the parts a translation can quietly break', () => {
+    // `name` feeds every {{char}}; the directives are written for the model.
+    expect(sectionGroup('name')).toBe('name');
+    expect(sectionGroup('system_prompt')).toBe('directives');
+    expect(sectionGroup('post_history_instructions')).toBe('directives');
+    expect(sectionGroup('creator_notes')).toBe('notes');
+    expect(sectionGroup('description')).toBe('core');
+    expect(sectionGroup('mes_example')).toBe('core');
+    expect(sectionGroup('greeting:3')).toBe('greetings');
+    expect(sectionGroup('lore:12')).toBe('lore');
+  });
+
+  it('covers every path cardSections produces', () => {
+    const fields = card({
+      name: 'n',
+      description: 'd',
+      creator_notes: 'c',
+      system_prompt: 's',
+      post_history_instructions: 'p',
+      alternate_greetings: ['a'],
+      character_book: lore([{ content: 'x' }]),
+    });
+    for (const section of cardSections(fields)) {
+      expect(sectionGroup(section.path)).toBeTruthy();
+    }
+  });
+});
+
+describe('glossaryReadiness', () => {
+  const fields = card({
+    character_book: lore([
+      { keys: ['Elder'], content: 'a' },
+      { keys: ['Keep'], content: 'b' },
+      { keys: [], content: 'c' },
+    ]),
+  });
+
+  it('counts what would and would not be translated', () => {
+    const ready = glossaryReadiness(fields, [
+      term({ source: 'Elder', target: '長老' }),
+      term({ source: 'Keep' }),
+      term({ source: 'Kaelen', keepOriginal: true }),
+    ]);
+
+    expect(ready).toEqual({
+      terms: 3,
+      decided: 2,
+      undecided: 1,
+      entriesWithKeys: 2,
+      // Only the Elder entry can be given a translated key; Keep is undecided.
+      entriesCovered: 1,
+    });
+  });
+
+  it('reports an empty glossary as covering nothing', () => {
+    expect(glossaryReadiness(fields, [])).toEqual({
+      terms: 0,
+      decided: 0,
+      undecided: 0,
+      entriesWithKeys: 2,
+      entriesCovered: 0,
+    });
+  });
+
+  it('does not count a kept-original term as covering its entry', () => {
+    // Nothing is appended for a term staying in the source language, so the
+    // entry gains no new key.
+    const ready = glossaryReadiness(fields, [term({ source: 'Elder', keepOriginal: true })]);
+    expect(ready.entriesCovered).toBe(0);
   });
 });
 

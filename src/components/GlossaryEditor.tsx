@@ -1,4 +1,4 @@
-import { ChevronDown, Download, Lock, Plus, Trash2, Unlock, Upload } from 'lucide-react';
+import { ChevronDown, Download, KeyRound, Lock, Plus, Trash2, Unlock, Upload } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 
 import type { GlossaryTerm, TermKind, TermUsage, TranslationMeta } from '../glossary';
@@ -44,6 +44,8 @@ export function GlossaryEditor({
   onStyleNotes,
   onImport,
   onExport,
+  onApplyKeys,
+  keysNotice,
   onJump,
 }: {
   meta: TranslationMeta;
@@ -65,6 +67,9 @@ export function GlossaryEditor({
   onStyleNotes: (notes: string) => void;
   onImport: (file: File) => void;
   onExport: () => void;
+  /** Push the agreed translations into the lorebook keys, without retranslating. */
+  onApplyKeys: () => void;
+  keysNotice: string;
   onJump: (path: string) => void;
 }) {
   const [query, setQuery] = useState('');
@@ -78,6 +83,7 @@ export function GlossaryEditor({
     () => terms.filter((term) => !term.keepOriginal && term.target.trim() === '').length,
     [terms],
   );
+  const decided = terms.length - undecided;
 
   // Filtering keeps the original index, because that is what every action takes.
   const rows = useMemo(() => {
@@ -131,6 +137,18 @@ export function GlossaryEditor({
           />
           <Progress progress={progress[EXTRACT_KEY] ?? progress[DECIDE_KEY]} />
         </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button onClick={onApplyKeys} disabled={decided === 0} className="btn-quiet">
+            <KeyRound className="size-3.5" />
+            套用譯詞到世界書關鍵字
+          </button>
+          {keysNotice && <span className="text-xs text-dim">{keysNotice}</span>}
+        </div>
+        <p className="text-xs leading-relaxed text-dim">
+          世界書的關鍵字是拿去比對讀者輸入的文字，所以譯後的條目需要譯詞當關鍵字才會被觸發。
+          原本的關鍵字一律保留，只是額外附加。整卡翻譯時會自動做這件事；這顆按鈕是給已經翻好的卡補做用的。
+        </p>
       </header>
 
       {[EXTRACT_KEY, DECIDE_KEY].map(

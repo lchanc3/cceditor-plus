@@ -146,6 +146,62 @@ export function cardSections(fields: CardFields): CardSection[] {
   return sections;
 }
 
+/**
+ * Which sections belong together when choosing what to translate.
+ *
+ * `name` and `directives` are separate from the prose for good reasons.
+ * `name` is where `{{char}}` expands from, so translating it changes every
+ * macro on the card; `system_prompt` and `post_history_instructions` are
+ * instructions written for the model rather than text for the reader, and
+ * translating an instruction is a good way to stop it working.
+ */
+export type SectionGroup = 'name' | 'core' | 'notes' | 'directives' | 'greetings' | 'lore';
+
+const DIRECTIVE_FIELDS = new Set<string>(['system_prompt', 'post_history_instructions']);
+
+export function sectionGroup(path: string): SectionGroup {
+  if (path === 'name') return 'name';
+  if (path === 'creator_notes') return 'notes';
+  if (DIRECTIVE_FIELDS.has(path)) return 'directives';
+  if (path.startsWith('greeting:')) return 'greetings';
+  if (path.startsWith('lore:')) return 'lore';
+  return 'core';
+}
+
+export interface GlossaryReadiness {
+  terms: number;
+  /** Terms with a translation, or deliberately kept in the source language. */
+  decided: number;
+  undecided: number;
+  /** Lorebook entries carrying keys at all. */
+  entriesWithKeys: number;
+  /** Of those, how many the glossary can currently supply a translated key for. */
+  entriesCovered: number;
+}
+
+/**
+ * Whether the glossary is in a state where translating would actually use it.
+ *
+ * `entriesCovered` is the number that matters: a lorebook key matches against
+ * what the reader types, so an entry translated without one keeps only its
+ * source-language keys and stops firing — silently.
+ */
+export function glossaryReadiness(fields: CardFields, terms: GlossaryTerm[]): GlossaryReadiness {
+  const decided = terms.filter((term) => term.keepOriginal || term.target.trim() !== '').length;
+  const entries = fields.character_book?.entries ?? [];
+  const withKeys = entries.filter((entry) => (entry.keys?.length ?? 0) > 0);
+
+  return {
+    terms: terms.length,
+    decided,
+    undecided: terms.length - decided,
+    entriesWithKeys: withKeys.length,
+    entriesCovered: withKeys.filter(
+      (entry) => translatedKeysFor(entry.keys, terms).length > 0,
+    ).length,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Seeding
 // ---------------------------------------------------------------------------
