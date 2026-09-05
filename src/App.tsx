@@ -97,8 +97,8 @@ export default function App() {
   /** Outcome of the last "apply glossary to lorebook keys" action. */
   const [keysNotice, setKeysNotice] = useState('');
 
-  const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
+  const translate = useTranslate(settings, state.glossary, model?.fields ?? null);
 
   // ---- draft persistence -------------------------------------------------
 

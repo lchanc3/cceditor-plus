@@ -16,6 +16,7 @@ import {
   TERM_KINDS,
   TermKind,
   cardSections,
+  parseSectionPath,
   termsInText,
 } from '../glossary';
 import { parseJsonItems } from './json';
@@ -32,6 +33,10 @@ export interface TranslateOptions {
   glossary?: GlossaryTerm[];
   /** Register, pronouns, forms of address — what the glossary cannot pin down. */
   styleNotes?: string;
+  /** Who the card is about, so a section translated alone knows whose world it is. */
+  card?: CardContext;
+  /** What this particular section is. */
+  section?: SectionContext;
   /** Shared pause, so one throttled request slows every other one with it. */
   gate?: RateGate;
 }
@@ -63,6 +68,82 @@ export function createRateGate(): RateGate {
 
 /** Reported as a progress step so a multi-request pass can show where it is. */
 export type ProgressFn = (done: number, total: number) => void;
+
+// ---------------------------------------------------------------------------
+// Context
+// ---------------------------------------------------------------------------
+
+/**
+ * Background about the card, sent with every section.
+ *
+ * Sections are translated one request at a time, which means a lorebook entry
+ * arrives at the model with no idea whose card it is or what the other nineteen
+ * entries said. The glossary fixes the proper nouns; this fixes everything a
+ * translator would otherwise have to guess — who is speaking, what kind of
+ * world it is, whether a word is a place or a title.
+ */
+export interface CardContext {
+  name: string;
+  nickname: string;
+  summary: string;
+}
+
+/** What one section is, which the section's own text rarely says. */
+export interface SectionContext {
+  label: string;
+  keys: string[];
+}
+
+/** Enough of the description to establish the setting, without paying for all of it. */
+const SUMMARY_LIMIT = 320;
+
+function summarise(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > SUMMARY_LIMIT ? `${flat.slice(0, SUMMARY_LIMIT)}…` : flat;
+}
+
+export function cardContext(fields: CardFields, forPath?: string): CardContext {
+  return {
+    name: fields.name.trim(),
+    nickname: fields.nickname?.trim() ?? '',
+    // Translating the description means the summary would just be the text
+    // again, so it is dropped rather than paid for twice.
+    summary: forPath === 'description' ? '' : summarise(fields.description),
+  };
+}
+
+export function sectionContext(fields: CardFields, path: string): SectionContext | undefined {
+  const section = cardSections(fields).find((entry) => entry.path === path);
+  if (!section) return undefined;
+
+  const target = parseSectionPath(path);
+  const keys =
+    target?.kind === 'lore' ? (fields.character_book?.entries[target.index]?.keys ?? []) : [];
+
+  return { label: section.label, keys };
+}
+
+function contextBlock(card?: CardContext, section?: SectionContext): string {
+  const lines: string[] = [];
+
+  if (card?.name) {
+    lines.push(`角色：${card.name}${card.nickname ? `（又稱 ${card.nickname}）` : ''}`);
+  }
+  if (card?.summary) lines.push(`設定摘要：${card.summary}`);
+  if (section?.label) {
+    const keys = section.keys.length > 0 ? `｜觸發關鍵字：${section.keys.join('、')}` : '';
+    lines.push(`本段內容是：${section.label}${keys}`);
+  }
+
+  if (lines.length === 0) return '';
+
+  // The instruction not to translate the block matters: without it the model
+  // helpfully returns the background as part of the answer.
+  return `
+
+【卡片背景 — 只用來理解上下文，絕對不要翻譯或輸出這一段】
+${lines.join('\n')}`;
+}
 
 /** A term is only worth sending once somebody has decided what to do with it. */
 const isDecided = (term: GlossaryTerm): boolean =>
@@ -98,7 +179,7 @@ const systemPrompt = (options: TranslateOptions, pinned: GlossaryTerm[]) =>
 2. 絕對保留所有技術性格式與變數（如 {{char}}, {{user}}, <START>, {{original}} 等），不可翻譯或改寫。
 3. 保留原文的換行與段落結構。
 4. 絕不輸出任何解釋、開場白或是結尾語（例如：「這是一份翻譯...」）。
-5. 只允許輸出純粹的翻譯內容。${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
+5. 只允許輸出純粹的翻譯內容。${contextBlock(options.card, options.section)}${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
 
 const MAX_ATTEMPTS = 3;
 /** Being throttled is worth more patience than a hiccup is. */
@@ -586,6 +667,12 @@ export async function translateCard(
   // One gate for the whole run, so a throttled section slows the others too.
   const gate = options.gate ?? createRateGate();
 
+  const entries = fields.character_book?.entries ?? [];
+  const keysFor = (path: string): string[] => {
+    const target = parseSectionPath(path);
+    return target?.kind === 'lore' ? (entries[target.index]?.keys ?? []) : [];
+  };
+
   const tasks = sections.map((section) => async (): Promise<SectionResult> => {
     const base = { path: section.path, label: section.label };
 
@@ -594,7 +681,12 @@ export async function translateCard(
     }
 
     try {
-      const text = await translateText(provider, section.text, { ...options, gate });
+      const text = await translateText(provider, section.text, {
+        ...options,
+        gate,
+        card: cardContext(fields, section.path),
+        section: { label: section.label, keys: keysFor(section.path) },
+      });
       return { ...base, text };
     } catch (error) {
       if ((error as Error).name === 'AbortError') throw error;

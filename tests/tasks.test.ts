@@ -10,8 +10,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CardFields, createEmptyCard, createEmptyLorebookEntry } from '../src/card';
 import {
+  cardContext,
   decideTranslations,
   extractTerms,
+  sectionContext,
   translateCard,
   translateText,
 } from '../src/ai/tasks';
@@ -125,6 +127,68 @@ describe('translateText prompt', () => {
       glossary: [term({ source: 'Emberwright' })],
     });
     expect(system(calls[0])).not.toContain('術語表');
+  });
+
+  it('tells the model whose card this is', async () => {
+    // A lorebook entry arrives on its own; without this the model has no idea
+    // what world it is translating for.
+    const { provider, calls } = fake('譯文');
+    const fields = card({
+      name: 'Kaelen',
+      nickname: 'The Ashen',
+      description: 'A knight sworn to the fallen keep of Ashfall.',
+      character_book: {
+        name: '',
+        extensions: {},
+        entries: [
+          { ...createEmptyLorebookEntry(0), keys: ['keep', 'fortress'], content: 'It is old.' },
+        ],
+      },
+    });
+
+    await translateText(provider, 'It is old.', {
+      ...options,
+      card: cardContext(fields, 'lore:0'),
+      section: sectionContext(fields, 'lore:0'),
+    });
+
+    const prompt = system(calls[0]);
+    expect(prompt).toContain('角色：Kaelen（又稱 The Ashen）');
+    expect(prompt).toContain('A knight sworn to the fallen keep of Ashfall.');
+    expect(prompt).toContain('本段內容是：世界書 #1（keep）');
+    expect(prompt).toContain('觸發關鍵字：keep、fortress');
+    // Without this the background comes back as part of the answer.
+    expect(prompt).toContain('絕對不要翻譯或輸出這一段');
+  });
+
+  it('does not repeat the description back when translating the description', async () => {
+    const { provider, calls } = fake('譯文');
+    const fields = card({ name: 'Kaelen', description: 'A knight of Ashfall.' });
+
+    await translateText(provider, fields.description, {
+      ...options,
+      card: cardContext(fields, 'description'),
+      section: sectionContext(fields, 'description'),
+    });
+
+    expect(system(calls[0])).toContain('角色：Kaelen');
+    expect(system(calls[0])).not.toContain('設定摘要');
+  });
+
+  it('adds no background block when there is nothing to say', async () => {
+    const { provider, calls } = fake('譯文');
+    await translateText(provider, 'Hello.', { ...options, card: cardContext(card()) });
+    expect(system(calls[0])).not.toContain('卡片背景');
+  });
+
+  it('truncates a long description rather than sending all of it', async () => {
+    const { provider, calls } = fake('譯文');
+    const fields = card({ name: 'X', description: 'a'.repeat(2000) });
+
+    await translateText(provider, 'Hello.', { ...options, card: cardContext(fields) });
+    const prompt = system(calls[0]);
+    expect(prompt).toContain('…');
+    expect(prompt.length).toBeLessThan(1200);
   });
 
   it('passes style notes through', async () => {

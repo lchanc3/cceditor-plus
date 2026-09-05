@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   AISettings,
+  cardContext,
   createProvider,
   decideTranslations,
   describeError,
   extractTerms,
+  sectionContext,
   translateCard,
   translateKeywords,
   translateText,
@@ -29,12 +31,19 @@ export const CARD_KEY = 'card';
  * Tracks one translation per UI slot (a field name, `greeting:2`, `lore:0`…),
  * so several can run at once and each shows its own state.
  *
- * The glossary is a hook argument rather than a per-call one so that every
- * translation carries it automatically — the same reasoning that puts the
- * "only send terms this text contains" filter inside `translateText`. A call
- * site cannot forget what it never has to pass.
+ * The glossary and the card are hook arguments rather than per-call ones so
+ * that every translation carries them automatically — the same reasoning that
+ * puts the "only send terms this text contains" filter inside `translateText`.
+ * A call site cannot forget what it never has to pass.
+ *
+ * The task key doubles as the section path, so the card context for one field
+ * can be worked out from the key alone.
  */
-export function useTranslate(settings: AISettings, meta: TranslationMeta) {
+export function useTranslate(
+  settings: AISettings,
+  meta: TranslationMeta,
+  fields: CardFields | null,
+) {
   const [status, setStatus] = useState<Record<string, TaskStatus>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [progress, setProgress] = useState<Record<string, TaskProgress>>({});
@@ -99,10 +108,21 @@ export function useTranslate(settings: AISettings, meta: TranslationMeta) {
           temperature: settings.temperature,
           glossary: meta.glossary,
           styleNotes: meta.styleNotes,
+          ...(fields
+            ? { card: cardContext(fields, key), section: sectionContext(fields, key) }
+            : {}),
           signal,
         }),
       ),
-    [provider, run, settings.targetLang, settings.temperature, meta.glossary, meta.styleNotes],
+    [
+      fields,
+      meta.glossary,
+      meta.styleNotes,
+      provider,
+      run,
+      settings.targetLang,
+      settings.temperature,
+    ],
   );
 
   const translateKeys = useCallback(
