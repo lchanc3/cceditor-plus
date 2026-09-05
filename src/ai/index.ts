@@ -6,6 +6,7 @@ export * from './types';
 export { createGeminiProvider } from './gemini';
 export { createOpenAIProvider } from './openai';
 export * from './tasks';
+export * from './json';
 
 export function createProvider(settings: AISettings): Provider {
   return settings.provider === 'openai'

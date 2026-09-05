@@ -107,6 +107,7 @@ export function createGeminiProvider(settings: GeminiSettings): Provider {
               ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
               ...(options.topP !== undefined ? { topP: options.topP } : {}),
               ...(options.maxTokens !== undefined ? { maxOutputTokens: options.maxTokens } : {}),
+              ...(options.json ? { responseMimeType: 'application/json' } : {}),
             },
           }),
         },

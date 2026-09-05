@@ -9,6 +9,12 @@ export interface ChatOptions {
   temperature?: number;
   topP?: number;
   maxTokens?: number;
+  /**
+   * Ask the endpoint to emit strict JSON. Advisory only: several
+   * OpenAI-compatible servers ignore it, and some reject it outright, so the
+   * response still goes through the tolerant parser in `json.ts`.
+   */
+  json?: boolean;
   signal?: AbortSignal;
 }
 
