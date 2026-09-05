@@ -41,6 +41,7 @@ export function TranslateReport({
   const failed = results.filter((r) => r.error !== undefined && !r.skipped);
   const skipped = results.filter((r) => r.skipped);
   const flagged = results.filter((r) => (issues[r.path]?.length ?? 0) > 0);
+  const throttled = failed.some((r) => r.transient);
 
   const tone = failed.length > 0 ? 'error' : flagged.length > 0 ? 'warn' : 'ok';
   const tones = {
@@ -70,6 +71,13 @@ export function TranslateReport({
             </p>
           )}
 
+          {throttled && (
+            <p className="text-xs text-dim">
+              端點回報了速率限制。已自動放慢並重試，但配額是按時間窗計算的——過一分鐘再重試失敗的段落通常就會過。
+              免費方案的每分鐘請求數很容易在長卡片上用完。
+            </p>
+          )}
+
           {failed.length > 0 && (
             <ul className="space-y-1.5">
               {failed.map((result) => (
@@ -81,7 +89,8 @@ export function TranslateReport({
                     {result.label}
                   </button>
                   <span className="text-dim">
-                    {result.filtered ? '（內容過濾）' : ''} — {result.error}
+                    {result.filtered ? '（內容過濾）' : result.transient ? '（限流）' : ''} —{' '}
+                    {result.error}
                   </span>
                 </li>
               ))}

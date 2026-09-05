@@ -152,12 +152,17 @@ describe('parseJsonItems', () => {
 // ---------------------------------------------------------------------------
 
 /** Records each request body so the tests can assert on what was actually sent. */
-function stubFetch(...responses: { status: number; body: unknown }[]) {
+function stubFetch(
+  ...responses: { status: number; body: unknown; headers?: Record<string, string> }[]
+) {
   const bodies: Record<string, unknown>[] = [];
   const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
     bodies.push(JSON.parse(init.body as string) as Record<string, unknown>);
     const next = responses.shift() ?? { status: 200, body: {} };
-    return new Response(JSON.stringify(next.body), { status: next.status });
+    return new Response(JSON.stringify(next.body), {
+      status: next.status,
+      headers: next.headers,
+    });
   });
   vi.stubGlobal('fetch', fetchMock);
   return { bodies, fetchMock };
@@ -223,6 +228,60 @@ describe('OpenAI-compatible JSON mode', () => {
       openai().chat([{ role: 'user', content: 'hi' }], { json: true }),
     ).rejects.toThrow(/model not found/);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('rate limits', () => {
+  it('carries Retry-After through, in seconds', async () => {
+    stubFetch({
+      status: 429,
+      body: { error: { message: 'quota exceeded' } },
+      headers: { 'Retry-After': '30' },
+    });
+
+    const error = await openai()
+      .chat([{ role: 'user', content: 'hi' }])
+      .catch((e: unknown) => e as ProviderError);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).options.retryAfterMs).toBe(30_000);
+  });
+
+  it('accepts an HTTP date too', async () => {
+    stubFetch({
+      status: 429,
+      body: {},
+      headers: { 'Retry-After': new Date(Date.now() + 20_000).toUTCString() },
+    });
+
+    const error = (await openai()
+      .chat([{ role: 'user', content: 'hi' }])
+      .catch((e: unknown) => e)) as ProviderError;
+
+    // Rounded to the second by the header format, so allow a little slack.
+    expect(error.options.retryAfterMs).toBeGreaterThan(18_000);
+    expect(error.options.retryAfterMs).toBeLessThanOrEqual(20_000);
+  });
+
+  it('marks a throttled request transient, and a dead connection not', async () => {
+    stubFetch({ status: 429, body: {} });
+    const throttled = (await openai()
+      .chat([{ role: 'user', content: 'hi' }])
+      .catch((e: unknown) => e)) as ProviderError;
+    expect(throttled.transient).toBe(true);
+
+    // A fetch that rejects outright never reached a server, so nothing will.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+    );
+    const dead = (await openai()
+      .chat([{ role: 'user', content: 'hi' }])
+      .catch((e: unknown) => e)) as ProviderError;
+    expect(dead.retryable).toBe(true);
+    expect(dead.transient).toBe(false);
   });
 });
 

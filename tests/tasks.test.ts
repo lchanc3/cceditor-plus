@@ -429,6 +429,61 @@ describe('translateCard', () => {
     expect(results.some((r) => r.skipped)).toBe(false);
   });
 
+  it('does not stop for rate limits, however many sections are throttled', async () => {
+    // The case that motivated this: a free Gemini tier is measured in requests
+    // per minute, so a long card gets throttled halfway through. Treating that
+    // as a broken endpoint discarded every section that had not run yet.
+    let attempts = 0;
+    const provider: Provider = {
+      id: 'openai',
+      async chat() {
+        attempts++;
+        // retryAfterMs 0 keeps the test quick; the classification is the point.
+        throw new ProviderError('已達速率上限。', {
+          status: 429,
+          retryable: true,
+          retryAfterMs: 0,
+        });
+      },
+      async listModels() {
+        return [];
+      },
+    };
+
+    const results = await translateCard(provider, fields, { ...options, concurrency: 1 });
+
+    expect(results.some((r) => r.skipped)).toBe(false);
+    expect(results.every((r) => r.transient)).toBe(true);
+    // Five attempts per section rather than three: being throttled earns more
+    // patience than a hiccup does.
+    expect(attempts).toBe(SECTION_COUNT * 5);
+  });
+
+  it('still stops for a connection that never reached a server', async () => {
+    // Retryable, but with no status — nothing answered, so nothing will.
+    let attempts = 0;
+    const provider: Provider = {
+      id: 'openai',
+      async chat() {
+        attempts++;
+        throw new ProviderError('連線失敗。', { retryable: true });
+      },
+      async listModels() {
+        return [];
+      },
+    };
+
+    vi.useFakeTimers();
+    const running = translateCard(provider, fields, { ...options, concurrency: 1 });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const results = await running;
+
+    expect(results.filter((r) => r.skipped).length).toBeGreaterThan(0);
+    expect(results.some((r) => r.transient)).toBe(false);
+    // Two sections, three attempts each, then the run gives up.
+    expect(attempts).toBe(6);
+  });
+
   it('stops after two failures that are not about the content', async () => {
     // A bad key fails every section identically; spending twenty requests to
     // discover that is pure waste.

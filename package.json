@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "fixtures": "tsx scripts/make-fixtures.ts"
+    "fixtures": "tsx scripts/make-fixtures.ts",
+    "mock": "tsx scripts/mock-endpoint.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

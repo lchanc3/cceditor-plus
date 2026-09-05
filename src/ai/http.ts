@@ -27,10 +27,12 @@ export async function requestJson<T>(
   const body = await response.text();
 
   if (!response.ok) {
+    const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'));
     const detail = extractError(body);
     throw new ProviderError(`${context}失敗（HTTP ${response.status}）：${detail}`, {
       status: response.status,
       retryable: RETRYABLE_STATUS.has(response.status),
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       // Azure OpenAI and several proxies report a blocked prompt as a 400
       // rather than a finish_reason. Recognising it keeps one blocked section
       // from being mistaken for a broken endpoint and stopping a whole run.
@@ -43,6 +45,22 @@ export async function requestJson<T>(
   } catch {
     throw new ProviderError(`${context}回應不是有效的 JSON。`);
   }
+}
+
+/**
+ * `Retry-After` in either of the forms RFC 9110 allows: a count of seconds, or
+ * an HTTP date. Honouring it beats guessing, since the server knows when its
+ * window rolls over.
+ */
+function parseRetryAfter(header: string | null): number | undefined {
+  if (!header) return undefined;
+
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds, 300) * 1000;
+
+  const at = Date.parse(header);
+  if (Number.isNaN(at)) return undefined;
+  return Math.min(Math.max(at - Date.now(), 0), 300_000);
 }
 
 /** Pull the human-readable part out of the many error envelopes in the wild. */

@@ -32,6 +32,33 @@ export interface TranslateOptions {
   glossary?: GlossaryTerm[];
   /** Register, pronouns, forms of address — what the glossary cannot pin down. */
   styleNotes?: string;
+  /** Shared pause, so one throttled request slows every other one with it. */
+  gate?: RateGate;
+}
+
+/**
+ * A pause every request respects.
+ *
+ * Without it, one worker hitting a rate limit backs off while the other two
+ * keep hammering the same endpoint — which is how a free-tier RPM allowance
+ * gets spent on requests that were never going to succeed.
+ */
+export interface RateGate {
+  wait(signal?: AbortSignal): Promise<void>;
+  pause(ms: number): void;
+}
+
+export function createRateGate(): RateGate {
+  let until = 0;
+  return {
+    async wait(signal) {
+      const remaining = until - Date.now();
+      if (remaining > 0) await delay(remaining, signal);
+    },
+    pause(ms) {
+      until = Math.max(until, Date.now() + ms);
+    },
+  };
 }
 
 /** Reported as a progress step so a multi-request pass can show where it is. */
@@ -74,6 +101,10 @@ const systemPrompt = (options: TranslateOptions, pinned: GlossaryTerm[]) =>
 5. 只允許輸出純粹的翻譯內容。${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
 
 const MAX_ATTEMPTS = 3;
+/** Being throttled is worth more patience than a hiccup is. */
+const MAX_TRANSIENT_ATTEMPTS = 5;
+/** A rate-limit window is measured in a minute, not in the 0.8s a blip needs. */
+const TRANSIENT_BACKOFF_MS = 12_000;
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -92,17 +123,30 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 async function withRetry<T>(run: () => Promise<T>, options: TranslateOptions): Promise<T> {
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt++) {
     options.signal?.throwIfAborted();
+    await options.gate?.wait(options.signal);
+
     try {
       return await run();
     } catch (error) {
       if ((error as Error).name === 'AbortError') throw error;
       lastError = error;
-      const retryable = error instanceof ProviderError && error.retryable;
-      if (!retryable || attempt === MAX_ATTEMPTS) break;
-      // Back off before trying again: 0.8s, then 1.6s.
-      await delay(800 * attempt, options.signal);
+
+      const failure = error instanceof ProviderError ? error : null;
+      if (!failure?.retryable) break;
+
+      const transient = failure.transient;
+      if (attempt >= (transient ? MAX_TRANSIENT_ATTEMPTS : MAX_ATTEMPTS)) break;
+
+      // A blip clears in under a second; a rate limit clears when the server's
+      // window rolls over, which only the server knows — so prefer what it said.
+      const waitMs = transient
+        ? (failure.options.retryAfterMs ?? TRANSIENT_BACKOFF_MS * attempt)
+        : 800 * attempt;
+
+      if (transient) options.gate?.pause(waitMs);
+      await delay(waitMs, options.signal);
     }
   }
   throw lastError;
@@ -491,6 +535,8 @@ export interface SectionResult {
   error?: string;
   /** A content filter rejected this text specifically. */
   filtered?: boolean;
+  /** The endpoint asked us to slow down — a rate limit, not a broken setup. */
+  transient?: boolean;
   /** Never attempted, because the run was stopped. */
   skipped?: boolean;
 }
@@ -507,11 +553,14 @@ export interface TranslateCardOptions extends TranslateOptions {
  *
  * A blocked section says nothing about the others — character cards trip
  * content filters routinely, which is the whole reason the Gemini provider
- * turns every safety category down. Anything else (a bad key, a wrong model
- * name, an unreachable endpoint) will fail all twenty sections identically, and
- * each one has already been retried three times by the time it lands here. Two
- * is enough to tell those apart without spending twenty requests to learn the
- * key is wrong, while still tolerating one unlucky section.
+ * turns every safety category down. Nor does a rate limit: a free Gemini tier
+ * measured in requests per minute will throttle a long card halfway through,
+ * and stopping there would throw away the half that had not run yet.
+ *
+ * Anything else — a bad key, a wrong model name, an unreachable endpoint —
+ * fails every section identically, and has already been retried by the time it
+ * lands here. Two is enough to tell that apart without spending twenty requests
+ * to learn the key is wrong, while still tolerating one unlucky section.
  */
 const FATAL_FAILURE_LIMIT = 2;
 
@@ -534,6 +583,8 @@ export async function translateCard(
 
   let fatalFailures = 0;
   let finished = 0;
+  // One gate for the whole run, so a throttled section slows the others too.
+  const gate = options.gate ?? createRateGate();
 
   const tasks = sections.map((section) => async (): Promise<SectionResult> => {
     const base = { path: section.path, label: section.label };
@@ -543,13 +594,15 @@ export async function translateCard(
     }
 
     try {
-      const text = await translateText(provider, section.text, options);
+      const text = await translateText(provider, section.text, { ...options, gate });
       return { ...base, text };
     } catch (error) {
       if ((error as Error).name === 'AbortError') throw error;
-      const filtered = error instanceof ProviderError && error.filtered;
-      if (!filtered) fatalFailures++;
-      return { ...base, error: describeError(error), filtered };
+      const failure = error instanceof ProviderError ? error : null;
+      const filtered = failure?.filtered ?? false;
+      const transient = failure?.transient ?? false;
+      if (!filtered && !transient) fatalFailures++;
+      return { ...base, error: describeError(error), filtered, transient };
     } finally {
       options.onProgress?.(++finished, sections.length);
     }

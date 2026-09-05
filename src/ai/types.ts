@@ -86,6 +86,8 @@ export class ProviderError extends Error {
       status?: number;
       retryable?: boolean;
       filtered?: boolean;
+      /** How long the server asked us to wait, from its Retry-After header. */
+      retryAfterMs?: number;
       cause?: unknown;
     } = {},
   ) {
@@ -108,5 +110,19 @@ export class ProviderError extends Error {
    */
   get filtered(): boolean {
     return this.options.filtered ?? false;
+  }
+
+  /**
+   * The server answered and asked us to come back later — a rate limit, or an
+   * overloaded model.
+   *
+   * Distinct from `retryable`, which is also true for a connection that never
+   * reached a server at all. That difference is what keeps a whole-card run
+   * alive: being throttled says the endpoint works and we are going too fast,
+   * whereas a connection failure says nothing will work. Free Gemini tiers are
+   * measured in requests per minute, so a 37-section card meets this routinely.
+   */
+  get transient(): boolean {
+    return this.options.status !== undefined && this.retryable;
   }
 }
