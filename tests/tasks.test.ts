@@ -12,6 +12,7 @@ import { CardFields, createEmptyCard, createEmptyLorebookEntry } from '../src/ca
 import {
   decideTranslations,
   extractTerms,
+  translateCard,
   translateText,
 } from '../src/ai/tasks';
 import { ChatMessage, ChatOptions, Provider, ProviderError } from '../src/ai/types';
@@ -326,6 +327,178 @@ describe('decideTranslations', () => {
 
     await decideTranslations(provider, fields, pending, options);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('translateCard', () => {
+  /** Replies by looking at what was sent, since pooled sections finish out of order. */
+  function byContent(reply: (content: string) => string) {
+    const seen: string[] = [];
+    const provider: Provider = {
+      id: 'openai',
+      async chat(messages) {
+        const content = messages.find((m) => m.role === 'user')?.content ?? '';
+        seen.push(content);
+        return reply(content);
+      },
+      async listModels() {
+        return [];
+      },
+    };
+    return { provider, seen };
+  }
+
+  const blocked = () => {
+    throw new ProviderError('內容被過濾器攔截。', { filtered: true, retryable: false });
+  };
+  const brokenKey = () => {
+    throw new ProviderError('金鑰無效。', { status: 400, retryable: false });
+  };
+
+  const fields = card({
+    description: 'DESC',
+    first_mes: 'FIRST',
+    mes_example: 'EXAMPLE',
+    alternate_greetings: ['GREET0', 'GREET1'],
+    character_book: {
+      name: '',
+      extensions: {},
+      entries: [
+        { ...createEmptyLorebookEntry(0), keys: ['k'], content: 'LORE0' },
+        { ...createEmptyLorebookEntry(1), keys: ['k'], content: 'LORE1' },
+      ],
+    },
+  });
+
+  // 3 plain fields + 2 greetings + 2 lore entries.
+  const SECTION_COUNT = 7;
+
+  it('translates every section and labels each result', async () => {
+    const { provider } = byContent((content) => `譯:${content.match(/"""\n(.*)\n"""/s)?.[1]}`);
+    const results = await translateCard(provider, fields, options);
+
+    expect(results).toHaveLength(SECTION_COUNT);
+    expect(results.map((r) => r.path)).toEqual([
+      'description',
+      'first_mes',
+      'mes_example',
+      'greeting:0',
+      'greeting:1',
+      'lore:0',
+      'lore:1',
+    ]);
+    expect(results.find((r) => r.path === 'greeting:1')?.text).toBe('譯:GREET1');
+    expect(results.every((r) => r.error === undefined)).toBe(true);
+  });
+
+  it('keeps the other sections when one is blocked', async () => {
+    // The whole point: a card that trips a filter on one entry must not lose
+    // the six translations that worked.
+    const { provider } = byContent((content) => {
+      if (content.includes('LORE0')) blocked();
+      return '譯文';
+    });
+
+    const results = await translateCard(provider, fields, options);
+    const failed = results.filter((r) => r.error !== undefined);
+
+    expect(failed.map((r) => r.path)).toEqual(['lore:0']);
+    expect(failed[0].filtered).toBe(true);
+    expect(results.filter((r) => r.text !== undefined)).toHaveLength(SECTION_COUNT - 1);
+  });
+
+  it('never stops for filtered sections, however many there are', async () => {
+    // A card whose every section trips the filter still gets every section
+    // attempted — being blocked says nothing about the next one.
+    let attempts = 0;
+    const provider: Provider = {
+      id: 'openai',
+      async chat() {
+        attempts++;
+        return blocked();
+      },
+      async listModels() {
+        return [];
+      },
+    };
+
+    const results = await translateCard(provider, fields, { ...options, concurrency: 1 });
+
+    expect(attempts).toBe(SECTION_COUNT);
+    expect(results.every((r) => r.filtered)).toBe(true);
+    expect(results.some((r) => r.skipped)).toBe(false);
+  });
+
+  it('stops after two failures that are not about the content', async () => {
+    // A bad key fails every section identically; spending twenty requests to
+    // discover that is pure waste.
+    const { provider, seen } = byContent(brokenKey);
+    const results = await translateCard(provider, fields, { ...options, concurrency: 1 });
+
+    expect(seen).toHaveLength(2);
+    expect(results.filter((r) => r.skipped)).toHaveLength(SECTION_COUNT - 2);
+    expect(results[2].error).toContain('沒有嘗試');
+  });
+
+  it('tolerates a single non-filtered failure', async () => {
+    const { provider } = byContent((content) => {
+      if (content.includes('FIRST')) brokenKey();
+      return '譯文';
+    });
+
+    const results = await translateCard(provider, fields, { ...options, concurrency: 1 });
+    expect(results.filter((r) => r.skipped)).toHaveLength(0);
+    expect(results.filter((r) => r.text !== undefined)).toHaveLength(SECTION_COUNT - 1);
+  });
+
+  it('retries only the paths it is given', async () => {
+    const { provider, seen } = byContent(() => '譯文');
+    const results = await translateCard(provider, fields, {
+      ...options,
+      only: ['lore:0', 'greeting:1'],
+    });
+
+    expect(seen).toHaveLength(2);
+    expect(results.map((r) => r.path)).toEqual(['greeting:1', 'lore:0']);
+  });
+
+  it('reports progress as sections finish', async () => {
+    const { provider } = byContent(() => '譯文');
+    const steps: number[] = [];
+    await translateCard(provider, fields, {
+      ...options,
+      concurrency: 1,
+      onProgress: (done) => steps.push(done),
+    });
+    expect(steps).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('does nothing for a card with no translatable text', async () => {
+    const { provider, seen } = byContent(() => '譯文');
+    expect(await translateCard(provider, card(), options)).toEqual([]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('pins the glossary into each section it applies to', async () => {
+    const systems: string[] = [];
+    const provider: Provider = {
+      id: 'openai',
+      async chat(messages) {
+        systems.push(messages.find((m) => m.role === 'system')?.content ?? '');
+        return '譯文';
+      },
+      async listModels() {
+        return [];
+      },
+    };
+
+    await translateCard(provider, card({ description: 'The Elder rules.', first_mes: 'Hello.' }), {
+      ...options,
+      glossary: [term({ source: 'Elder', target: '長老' })],
+    });
+
+    expect(systems[0]).toContain('Elder => 長老');
+    expect(systems[1]).not.toContain('術語表');
   });
 });
 

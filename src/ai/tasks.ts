@@ -478,6 +478,100 @@ export async function runPooled<T>(
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Whole-card translation
+// ---------------------------------------------------------------------------
+
+export interface SectionResult {
+  path: string;
+  label: string;
+  /** The translation, when it worked. */
+  text?: string;
+  /** A message already written for the user, when it did not. */
+  error?: string;
+  /** A content filter rejected this text specifically. */
+  filtered?: boolean;
+  /** Never attempted, because the run was stopped. */
+  skipped?: boolean;
+}
+
+export interface TranslateCardOptions extends TranslateOptions {
+  onProgress?: ProgressFn;
+  /** Restrict the run to these paths, so a retry costs only what failed. */
+  only?: string[];
+  concurrency?: number;
+}
+
+/**
+ * How many non-filtered failures end the run.
+ *
+ * A blocked section says nothing about the others — character cards trip
+ * content filters routinely, which is the whole reason the Gemini provider
+ * turns every safety category down. Anything else (a bad key, a wrong model
+ * name, an unreachable endpoint) will fail all twenty sections identically, and
+ * each one has already been retried three times by the time it lands here. Two
+ * is enough to tell those apart without spending twenty requests to learn the
+ * key is wrong, while still tolerating one unlucky section.
+ */
+const FATAL_FAILURE_LIMIT = 2;
+
+/**
+ * Translate the whole card, section by section.
+ *
+ * Partial success is the point: nineteen good translations must not be thrown
+ * away because the twentieth was blocked. Nothing is written here — the caller
+ * decides what to do with each result, and the sections that failed still hold
+ * their original text, so a retry can be limited to those with `only`.
+ */
+export async function translateCard(
+  provider: Provider,
+  fields: CardFields,
+  options: TranslateCardOptions,
+): Promise<SectionResult[]> {
+  const wanted = options.only ? new Set(options.only) : null;
+  const sections = cardSections(fields).filter((s) => !wanted || wanted.has(s.path));
+  if (sections.length === 0) return [];
+
+  let fatalFailures = 0;
+  let finished = 0;
+
+  const tasks = sections.map((section) => async (): Promise<SectionResult> => {
+    const base = { path: section.path, label: section.label };
+
+    if (fatalFailures >= FATAL_FAILURE_LIMIT) {
+      return { ...base, skipped: true, error: '前面的錯誤會影響每一段，因此沒有嘗試。' };
+    }
+
+    try {
+      const text = await translateText(provider, section.text, options);
+      return { ...base, text };
+    } catch (error) {
+      if ((error as Error).name === 'AbortError') throw error;
+      const filtered = error instanceof ProviderError && error.filtered;
+      if (!filtered) fatalFailures++;
+      return { ...base, error: describeError(error), filtered };
+    } finally {
+      options.onProgress?.(++finished, sections.length);
+    }
+  });
+
+  const settled = await runPooled(tasks, options.concurrency ?? 3, options.signal);
+
+  return sections.map((section, index) => {
+    const result = settled[index];
+    // `runPooled` leaves a hole for anything it never started, which is what a
+    // cancellation mid-run looks like.
+    if (!result) return { path: section.path, label: section.label, skipped: true };
+    return result.status === 'fulfilled'
+      ? result.value
+      : {
+          path: section.path,
+          label: section.label,
+          error: describeError(result.reason),
+        };
+  });
+}
+
 export function describeError(error: unknown): string {
   if ((error as Error)?.name === 'AbortError') return '已取消。';
   if (error instanceof ProviderError) return error.message;
