@@ -20,6 +20,7 @@ import {
   cardSections,
   duplicateTargets,
   mergeTerms,
+  parseSectionPath,
   scanUsage,
   seedTerms,
   termsInText,
@@ -82,6 +83,39 @@ describe('cardSections', () => {
     const labels = cardSections(fields).map((section) => section.label);
     expect(labels).toEqual(['世界書 #1（長老設定）', '世界書 #2（Ashfall Keep）', '世界書 #3']);
   });
+});
+
+describe('parseSectionPath', () => {
+  it('round-trips every path cardSections hands out', () => {
+    // The two halves of the path grammar have to agree, or a translated field
+    // would be written back to nowhere.
+    const fields = card({
+      name: 'n',
+      description: 'd',
+      creator_notes: 'c',
+      system_prompt: 's',
+      post_history_instructions: 'p',
+      alternate_greetings: ['a', 'b'],
+      character_book: lore([{ content: 'x' }, { content: 'y' }]),
+    });
+
+    for (const section of cardSections(fields)) {
+      expect(parseSectionPath(section.path)).not.toBeNull();
+    }
+  });
+
+  it('resolves each kind of path', () => {
+    expect(parseSectionPath('description')).toEqual({ kind: 'field', key: 'description' });
+    expect(parseSectionPath('greeting:2')).toEqual({ kind: 'greeting', index: 2 });
+    expect(parseSectionPath('lore:0')).toEqual({ kind: 'lore', index: 0 });
+  });
+
+  it.each(['tags', 'extensions', 'greeting', 'greeting:', 'greeting:x', 'lore:1:keys', ''])(
+    'rejects %p',
+    (path) => {
+      expect(parseSectionPath(path)).toBeNull();
+    },
+  );
 });
 
 describe('seedTerms', () => {

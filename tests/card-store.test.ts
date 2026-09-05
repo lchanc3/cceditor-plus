@@ -232,6 +232,45 @@ describe('editing terms', () => {
   });
 });
 
+describe('section.set', () => {
+  const withCard = () =>
+    loaded({
+      ...worldCard(),
+      fields: { ...worldCard().fields, alternate_greetings: ['first', 'second'] },
+    });
+
+  it('writes back to a plain field', () => {
+    const state = run(withCard(), { type: 'section.set', path: 'description', value: '譯文' });
+    expect(state.model!.fields.description).toBe('譯文');
+    expect(state.dirty).toBe(true);
+  });
+
+  it('writes back to a greeting', () => {
+    const state = run(withCard(), { type: 'section.set', path: 'greeting:1', value: '第二句' });
+    expect(state.model!.fields.alternate_greetings).toEqual(['first', '第二句']);
+  });
+
+  it('writes back to a lorebook entry, leaving its keys alone', () => {
+    const state = run(withCard(), { type: 'section.set', path: 'lore:0', value: '她統治了八十年。' });
+    const entry = state.model!.fields.character_book!.entries[0];
+    expect(entry.content).toBe('她統治了八十年。');
+    expect(entry.keys).toEqual(['Grand Maiden Elder']);
+  });
+
+  it('ignores a path it does not recognise', () => {
+    const before = withCard();
+    expect(run(before, { type: 'section.set', path: 'tags', value: 'x' })).toBe(before);
+  });
+
+  it('ignores an index that no longer exists', () => {
+    // Paths are captured before a translation run and can outlive the entry
+    // they named; growing a sparse array instead would corrupt the card.
+    const before = withCard();
+    expect(run(before, { type: 'section.set', path: 'greeting:9', value: 'x' })).toBe(before);
+    expect(run(before, { type: 'section.set', path: 'lore:9', value: 'x' })).toBe(before);
+  });
+});
+
 describe('lore.addKeyList', () => {
   const withEntry = () => loaded(worldCard());
 

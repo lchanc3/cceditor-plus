@@ -14,6 +14,7 @@ import {
   TranslationMeta,
   createTranslationMeta,
   mergeTerms,
+  parseSectionPath,
   readTranslationMeta,
   seedTerms,
   writeTranslationMeta,
@@ -43,6 +44,8 @@ export type CardAction =
   | { type: 'load'; model: CardModel; imageBytes?: Uint8Array; origin: CardOrigin; warnings: string[] }
   | { type: 'restore'; model: CardModel; imageBytes?: Uint8Array }
   | { type: 'setField'; key: keyof CardFields; value: CardFields[keyof CardFields] }
+  /** Write back to whatever `cardSections` called `path`. Unknown paths are ignored. */
+  | { type: 'section.set'; path: string; value: string }
   | { type: 'greeting.set'; index: number; value: string }
   | { type: 'greeting.add' }
   | { type: 'greeting.remove'; index: number }
@@ -160,6 +163,34 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
 
     case 'setField':
       return withFields(state, { [action.key]: action.value } as Partial<CardFields>);
+
+    case 'section.set': {
+      // Resolving the path here rather than in the component keeps the mapping
+      // testable — whole-card translation is then just a loop over
+      // `cardSections` and a dispatch per result.
+      const target = parseSectionPath(action.path);
+      if (!target || !state.model) return state;
+
+      if (target.kind === 'field') {
+        return withFields(state, { [target.key]: action.value } as Partial<CardFields>);
+      }
+
+      if (target.kind === 'greeting') {
+        const greetings = state.model.fields.alternate_greetings;
+        // A path can outlive the entry it named, so an index that no longer
+        // exists is dropped rather than growing a sparse array.
+        if (target.index < 0 || target.index >= greetings.length) return state;
+        const next = [...greetings];
+        next[target.index] = action.value;
+        return withFields(state, { alternate_greetings: next });
+      }
+
+      const entries = state.model.fields.character_book?.entries ?? [];
+      if (target.index < 0 || target.index >= entries.length) return state;
+      return withEntries(state, (current) =>
+        current.map((entry, i) => (i === target.index ? { ...entry, content: action.value } : entry)),
+      );
+    }
 
     case 'greeting.set': {
       if (!state.model) return state;

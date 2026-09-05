@@ -26,7 +26,7 @@ export interface TermUsage {
   total: number;
 }
 
-const PLAIN_FIELDS: { key: keyof CardFields; label: string }[] = [
+const PLAIN_FIELDS = [
   { key: 'name', label: '名稱' },
   { key: 'description', label: '角色描述' },
   { key: 'personality', label: '性格設定' },
@@ -36,7 +36,35 @@ const PLAIN_FIELDS: { key: keyof CardFields; label: string }[] = [
   { key: 'creator_notes', label: '作者備註' },
   { key: 'system_prompt', label: '系統提示' },
   { key: 'post_history_instructions', label: '歷史後指示' },
-];
+] as const satisfies readonly { key: keyof CardFields; label: string }[];
+
+/** The card fields a section can name. Every one of them holds a plain string. */
+export type TextFieldKey = (typeof PLAIN_FIELDS)[number]['key'];
+
+/** What a section path points at, once resolved. */
+export type SectionTarget =
+  | { kind: 'field'; key: TextFieldKey }
+  | { kind: 'greeting'; index: number }
+  | { kind: 'lore'; index: number };
+
+const FIELD_PATHS = new Set<string>(PLAIN_FIELDS.map((field) => field.key));
+
+/**
+ * The inverse of the paths `cardSections` hands out.
+ *
+ * It lives next to the producer so the two halves of the path grammar cannot
+ * drift apart, and returns `null` for anything it does not recognise — a path
+ * can outlive the entry it named.
+ */
+export function parseSectionPath(path: string): SectionTarget | null {
+  if (FIELD_PATHS.has(path)) return { kind: 'field', key: path as TextFieldKey };
+
+  const match = /^(greeting|lore):(\d+)$/.exec(path);
+  if (!match) return null;
+
+  const index = Number(match[2]);
+  return match[1] === 'lore' ? { kind: 'lore', index } : { kind: 'greeting', index };
+}
 
 const fold = (text: string): string => text.toLowerCase();
 
@@ -82,7 +110,7 @@ export function cardSections(fields: CardFields): CardSection[] {
 
   for (const { key, label } of PLAIN_FIELDS) {
     const text = fields[key];
-    if (typeof text === 'string' && text.trim() !== '') sections.push({ path: key, label, text });
+    if (text.trim() !== '') sections.push({ path: key, label, text });
   }
 
   fields.alternate_greetings.forEach((text, index) => {
