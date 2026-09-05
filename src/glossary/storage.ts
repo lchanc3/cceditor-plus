@@ -169,9 +169,11 @@ function readTerms(raw: unknown): GlossaryTerm[] {
   return terms;
 }
 
-/** `null` when the card carries nothing worth restoring. */
-export function readTranslationMeta(fields: CardFields): TranslationMeta | null {
-  const stored = fields.extensions?.[GLOSSARY_NAMESPACE];
+/**
+ * Read one stored block, wherever it came from — the card, or a glossary file
+ * somebody exported from another card. `null` when it says nothing.
+ */
+export function decodeTranslationMeta(stored: unknown): TranslationMeta | null {
   if (!isRecord(stored)) return null;
 
   const updatedAt = stored.updatedAt;
@@ -184,6 +186,11 @@ export function readTranslationMeta(fields: CardFields): TranslationMeta | null 
   };
 
   return isEmptyTranslationMeta(meta) ? null : meta;
+}
+
+/** `null` when the card carries nothing worth restoring. */
+export function readTranslationMeta(fields: CardFields): TranslationMeta | null {
+  return decodeTranslationMeta(fields.extensions?.[GLOSSARY_NAMESPACE]);
 }
 
 export function hasTranslationMeta(fields: CardFields): boolean {
@@ -212,29 +219,13 @@ function storeTerm(term: GlossaryTerm): StoredTerm {
 }
 
 /**
- * Returns the replacement `extensions` object — the caller commits it with
- * `setField('extensions', …)`, so this stays a pure function over the card.
+ * The stored block on its own, or `null` when there is nothing to store.
  *
- * Unrecognised keys inside our own namespace are carried through, on the same
- * principle as `extraData`: a newer build of this editor may have written
- * something an older one has no business deleting.
+ * Exported so a glossary written to a file is byte-for-byte what a card would
+ * carry — otherwise a file exported from one card would not load into another.
  */
-export function writeTranslationMeta(
-  fields: CardFields,
-  meta: TranslationMeta,
-): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...fields.extensions };
-  const previous = isRecord(next[GLOSSARY_NAMESPACE]) ? next[GLOSSARY_NAMESPACE] : {};
-
-  if (isEmptyTranslationMeta(meta)) {
-    delete next[GLOSSARY_NAMESPACE];
-    return next;
-  }
-
-  const carried: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(previous)) {
-    if (!OWNED_KEYS.has(key)) carried[key] = value;
-  }
+export function encodeTranslationMeta(meta: TranslationMeta): Record<string, unknown> | null {
+  if (isEmptyTranslationMeta(meta)) return null;
 
   const seen = new Set<string>();
   const glossary: StoredTerm[] = [];
@@ -249,8 +240,7 @@ export function writeTranslationMeta(
   const targetLang = meta.targetLang.trim();
   const styleNotes = meta.styleNotes.trim();
 
-  next[GLOSSARY_NAMESPACE] = {
-    ...carried,
+  return {
     v: GLOSSARY_SCHEMA_VERSION,
     ...(sourceLang !== '' ? { sourceLang } : {}),
     ...(targetLang !== '' ? { targetLang } : {}),
@@ -258,7 +248,35 @@ export function writeTranslationMeta(
     ...(meta.updatedAt !== undefined ? { updatedAt: meta.updatedAt } : {}),
     ...(glossary.length > 0 ? { glossary } : {}),
   };
+}
 
+/**
+ * Returns the replacement `extensions` object — the caller commits it with
+ * `setField('extensions', …)`, so this stays a pure function over the card.
+ *
+ * Unrecognised keys inside our own namespace are carried through, on the same
+ * principle as `extraData`: a newer build of this editor may have written
+ * something an older one has no business deleting.
+ */
+export function writeTranslationMeta(
+  fields: CardFields,
+  meta: TranslationMeta,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...fields.extensions };
+  const previous = isRecord(next[GLOSSARY_NAMESPACE]) ? next[GLOSSARY_NAMESPACE] : {};
+  const encoded = encodeTranslationMeta(meta);
+
+  if (!encoded) {
+    delete next[GLOSSARY_NAMESPACE];
+    return next;
+  }
+
+  const carried: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(previous)) {
+    if (!OWNED_KEYS.has(key)) carried[key] = value;
+  }
+
+  next[GLOSSARY_NAMESPACE] = { ...carried, ...encoded };
   return next;
 }
 

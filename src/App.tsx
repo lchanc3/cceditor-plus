@@ -1,5 +1,5 @@
 import { Download, RotateCcw, Settings, Sparkles } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AISettings, loadSettings, saveSettings } from './ai';
 import {
@@ -7,13 +7,24 @@ import {
   CardModel,
   readCardBytes,
   readCardFile,
+  suggestFilename,
 } from './card';
+import {
+  createTerm,
+  decodeTranslationMeta,
+  duplicateTargets,
+  encodeTranslationMeta,
+  scanUsage,
+  termsInText,
+  unappliedTerms,
+} from './glossary';
 import { AdvancedEditor } from './components/AdvancedEditor';
 import { BasicEditor } from './components/BasicEditor';
 import { CardSummary } from './components/CardSummary';
 import { Dropzone } from './components/Dropzone';
 import { ExportDialog } from './components/ExportDialog';
 import { FieldEditor } from './components/FieldEditor';
+import { GlossaryEditor } from './components/GlossaryEditor';
 import { GreetingsEditor } from './components/GreetingsEditor';
 import { LorebookEditor } from './components/LorebookEditor';
 import { SettingsDialog } from './components/SettingsDialog';
@@ -21,6 +32,7 @@ import { TabBar, TabDef } from './components/TabBar';
 import { Banner } from './components/ui';
 import { useTranslate } from './hooks/useTranslate';
 import { clearDraft, loadDraft, saveDraft } from './lib/draft';
+import { downloadText } from './lib/download';
 import { useCardStore } from './state/cardStore';
 
 /** Shown in the footer to satisfy AGPL-3.0 section 13. */
@@ -36,6 +48,12 @@ const LONG_FIELDS = {
 
 type LongField = keyof typeof LONG_FIELDS;
 
+/** Everything the glossary tab needs that is not task state. */
+type GlossaryPanel = Omit<
+  ComponentProps<typeof GlossaryEditor>,
+  'status' | 'errors' | 'progress' | 'onCancel'
+>;
+
 export default function App() {
   const { state, actions, dispatch, reset } = useCardStore();
   const [settings, setSettings] = useState<AISettings>(loadSettings);
@@ -47,6 +65,14 @@ export default function App() {
   const [draftOffer, setDraftOffer] = useState<{ model: CardModel; imageBytes?: Uint8Array } | null>(
     null,
   );
+  /**
+   * Terms the last translation run failed to honour.
+   *
+   * Transient on purpose: checking one needs the source and the translation
+   * side by side, and translating in place destroys the source. So it can only
+   * be worked out at the moment a translation lands, never afterwards.
+   */
+  const [unapplied, setUnapplied] = useState<Set<string>>(new Set());
 
   const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
@@ -81,6 +107,7 @@ export default function App() {
         const result = await readCardFile(file);
         actions.load(result.model, result.origin, result.warnings, result.imageBytes);
         setActiveTab('basic');
+        setUnapplied(new Set());
         setDraftOffer(null);
       } catch (error) {
         setLoadError((error as Error).message || '無法讀取這個檔案。');
@@ -110,6 +137,7 @@ export default function App() {
     if (state.dirty && !window.confirm('尚未匯出的編輯將會遺失，確定要清空嗎？')) return;
     void clearDraft();
     translate.cancelAll();
+    setUnapplied(new Set());
     reset();
   }, [reset, state.dirty, translate]);
 
@@ -120,27 +148,53 @@ export default function App() {
     [actions],
   );
 
+  /**
+   * Compare a finished translation against the glossary while the source is
+   * still available. Terms honoured this time drop off the list, so a retry
+   * clears its own flag.
+   */
+  const checkApplied = useCallback(
+    (source: string, translated: string) => {
+      const glossary = state.glossary.glossary;
+      const missed = new Set(unappliedTerms(source, translated, glossary).map((t) => t.source));
+      const checked = termsInText(source, glossary).map((t) => t.source);
+      if (checked.length === 0) return;
+
+      setUnapplied((prev) => {
+        const next = new Set(prev);
+        for (const term of checked) {
+          if (missed.has(term)) next.add(term);
+          else next.delete(term);
+        }
+        return next;
+      });
+    },
+    [state.glossary.glossary],
+  );
+
   const translateField = useCallback(
     async (key: keyof CardFields) => {
       if (!model) return;
       const current = model.fields[key];
       if (typeof current !== 'string') return;
       const result = await translate.translate(key as string, current);
-      if (result !== null) setField(key, result as CardFields[typeof key]);
+      if (result === null) return;
+      setField(key, result as CardFields[typeof key]);
+      checkApplied(current, result);
     },
-    [model, setField, translate],
+    [checkApplied, model, setField, translate],
   );
 
   const translateGreeting = useCallback(
     async (index: number) => {
       if (!model) return;
-      const result = await translate.translate(
-        `greeting:${index}`,
-        model.fields.alternate_greetings[index],
-      );
-      if (result !== null) dispatch({ type: 'greeting.set', index, value: result });
+      const source = model.fields.alternate_greetings[index];
+      const result = await translate.translate(`greeting:${index}`, source);
+      if (result === null) return;
+      dispatch({ type: 'greeting.set', index, value: result });
+      checkApplied(source, result);
     },
-    [dispatch, model, translate],
+    [checkApplied, dispatch, model, translate],
   );
 
   const translateLoreEntry = useCallback(
@@ -173,9 +227,74 @@ export default function App() {
           ...(secondary.length > 0 ? { secondary_keys: secondary } : {}),
         },
       });
+      checkApplied(entry.content, content);
     },
-    [dispatch, model, translate],
+    [checkApplied, dispatch, model, translate],
   );
+
+  // ---- glossary ----------------------------------------------------------
+
+  const glossary = state.glossary.glossary;
+
+  const usage = useMemo(
+    () => (model ? scanUsage(model.fields, glossary) : []),
+    [model, glossary],
+  );
+  const conflicts = useMemo(() => duplicateTargets(glossary), [glossary]);
+
+  const runExtract = useCallback(async () => {
+    if (!model) return;
+    const found = await translate.extract(model.fields);
+    // `glossary.merge` applies the precedence rules, so this can only fill
+    // blanks — it will not overwrite a name somebody already settled.
+    if (found) dispatch({ type: 'glossary.merge', terms: found });
+  }, [dispatch, model, translate]);
+
+  const runDecide = useCallback(async () => {
+    if (!model) return;
+    dispatch({ type: 'glossary.setLangs', targetLang: settings.targetLang });
+    const decided = await translate.decide(model.fields, glossary);
+    if (decided) dispatch({ type: 'glossary.merge', terms: decided });
+  }, [dispatch, glossary, model, settings.targetLang, translate]);
+
+  const importGlossary = useCallback(
+    async (file: File) => {
+      setLoadError('');
+      try {
+        const parsed = decodeTranslationMeta(JSON.parse(await file.text()));
+        if (!parsed) throw new Error('檔案裡沒有詞彙表資料。');
+        dispatch({ type: 'glossary.merge', terms: parsed.glossary });
+        // Adopt the imported style notes only when there are none to lose.
+        if (state.glossary.styleNotes.trim() === '' && parsed.styleNotes.trim() !== '') {
+          dispatch({ type: 'glossary.setStyleNotes', notes: parsed.styleNotes });
+        }
+      } catch (error) {
+        setLoadError(`無法匯入詞彙表：${(error as Error).message}`);
+      }
+    },
+    [dispatch, state.glossary.styleNotes],
+  );
+
+  const exportGlossary = useCallback(() => {
+    const encoded = encodeTranslationMeta(state.glossary);
+    if (!encoded || !model) return;
+    // Same shape the card carries, so a file from one card loads into another.
+    downloadText(
+      JSON.stringify(encoded, null, 2),
+      suggestFilename(model, 'glossary.json'),
+    );
+  }, [model, state.glossary]);
+
+  /** Term occurrences are addressed by section path; tabs are not. */
+  const jumpToPath = useCallback((path: string) => {
+    if (path.startsWith('greeting:')) return setActiveTab('greetings');
+    if (path.startsWith('lore:')) return setActiveTab('lorebook');
+    if (path === 'name' || path === 'creator_notes') return setActiveTab('basic');
+    if (path === 'system_prompt' || path === 'post_history_instructions') {
+      return setActiveTab('advanced');
+    }
+    setActiveTab(path);
+  }, []);
 
   // ---- tabs --------------------------------------------------------------
 
@@ -193,10 +312,11 @@ export default function App() {
         badge: fields?.alternate_greetings.length ?? 0,
       },
       { id: 'lorebook', label: '世界書', badge: fields?.character_book?.entries.length ?? 0 },
+      { id: 'glossary', label: '詞彙', badge: glossary.length },
       { id: 'mes_example', label: '對話範例' },
       { id: 'advanced', label: '進階' },
     ];
-  }, [model]);
+  }, [glossary.length, model]);
 
   // ---- render ------------------------------------------------------------
 
@@ -316,6 +436,25 @@ export default function App() {
                   onTranslateField={translateField}
                   onTranslateGreeting={translateGreeting}
                   onTranslateLore={translateLoreEntry}
+                  glossary={{
+                    meta: state.glossary,
+                    usage,
+                    conflicts,
+                    unapplied,
+                    onSeed: () => dispatch({ type: 'glossary.seed' }),
+                    onExtract: runExtract,
+                    onDecide: runDecide,
+                    onPatch: (index, patch) =>
+                      dispatch({ type: 'glossary.patchTerm', index, patch }),
+                    onAdd: (source) =>
+                      dispatch({ type: 'glossary.addTerm', term: createTerm({ source }) }),
+                    onRemove: (index) => dispatch({ type: 'glossary.removeTerm', index }),
+                    onClear: () => dispatch({ type: 'glossary.clear' }),
+                    onStyleNotes: (notes) => dispatch({ type: 'glossary.setStyleNotes', notes }),
+                    onImport: importGlossary,
+                    onExport: exportGlossary,
+                    onJump: jumpToPath,
+                  }}
                 />
               </div>
             </div>
@@ -392,6 +531,7 @@ function TabContent({
   onTranslateField,
   onTranslateGreeting,
   onTranslateLore,
+  glossary,
 }: {
   activeTab: string;
   fields: CardFields;
@@ -401,6 +541,7 @@ function TabContent({
   onTranslateField: (key: keyof CardFields) => void;
   onTranslateGreeting: (index: number) => void;
   onTranslateLore: (index: number) => void;
+  glossary: GlossaryPanel;
 }) {
   if (activeTab in LONG_FIELDS) {
     const key = activeTab as LongField;
@@ -462,6 +603,17 @@ function TabContent({
           }
           onTranslate={onTranslateLore}
           onCancel={(index) => translate.cancel(`lore:${index}`)}
+        />
+      );
+
+    case 'glossary':
+      return (
+        <GlossaryEditor
+          {...glossary}
+          status={translate.status}
+          errors={translate.errors}
+          progress={translate.progress}
+          onCancel={translate.cancel}
         />
       );
 
