@@ -17,7 +17,7 @@ npm run build    # 產出 dist/
 - **v1 / v2 / v3 讀寫**，PNG（`chara` + `ccv3` chunk）與 JSON 皆可。同時存在時依規範以 `ccv3` 優先。
 - **無損編輯** — 未建模的欄位原樣保留，匯出時寫回去。
 - **四種匯出格式**：`v1` / `v2` / `v3` / **`max`**。`max` 同時具備 V1 的扁平欄位與 V3 的 `spec`+`data` 結構，任何版本的讀取器都能正確讀取（對應 CCEditor 的 `toMaxCompatibleSpec`）。匯出時可選擇是否附帶術語表；V1 只有 6 個欄位、沒有 `extensions`，術語表無法隨之保留，對話框會直說。
-- **AI 翻譯**：Gemini 或任何 OpenAI 相容端點（OpenAI、OpenRouter、DeepSeek、Groq、LM Studio、Ollama、one-api…）。可取消、失敗自動重試。
+- **AI 翻譯**：Gemini 或任何 OpenAI 相容端點（OpenAI、OpenRouter、NanoGPT、DeepSeek、Groq、LM Studio、Ollama、one-api…）。可取消、失敗自動重試。
 - **模型清單自動搜尋** — 兩種服務都能打端點列出可用模型，直接點選或自動補完。
 - **翻譯術語表**：先讓 AI 從卡片抽出專有名詞，再逐一議定譯名，之後每次翻譯都只把該段文字用得到的詞釘進提示詞裡——200 個詞的卡片也不會撐出一個巨大的 prompt。譯名可鎖定、可標記「保留原文」、可設別名；你手填的與匯入的譯名，後續 AI 只會補空白，永遠不會覆寫。術語表連同風格註記存在卡片的 `data.extensions.cceditor_plus` 裡，跟著卡片走，也能單獨匯入／匯出 JSON。
 - **整卡翻譯**：一次翻完所有欄位、開場白與世界書條目，最多三段並行，可中途取消。局部成功是刻意的——被內容過濾器擋下的那一段不會拖垮其餘十九段，失敗的段落保留原文，重試時只花在那幾段上。

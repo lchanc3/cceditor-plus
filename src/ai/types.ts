@@ -70,6 +70,7 @@ export const DEFAULT_SETTINGS: AISettings = {
 export const OPENAI_PRESETS: { label: string; baseUrl: string }[] = [
   { label: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
   { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1' },
+  { label: 'NanoGPT', baseUrl: 'https://nano-gpt.com/api/v1' },
   { label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1' },
   { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1' },
   { label: 'LM Studio（本機）', baseUrl: 'http://localhost:1234/v1' },
