@@ -203,6 +203,28 @@ export function SettingsDialog({
           />
           <p className="mt-1 text-xs text-dim">越低越貼近原文，越高越自由。</p>
         </div>
+
+        <div>
+          <label className="label" htmlFor="rpm">
+            每分鐘請求數上限
+          </label>
+          <input
+            id="rpm"
+            type="number"
+            min={0}
+            max={600}
+            step={1}
+            className="field text-sm"
+            value={draft.requestsPerMinute}
+            onChange={(event) =>
+              patch({ requestsPerMinute: Math.max(0, Math.floor(Number(event.target.value) || 0)) })
+            }
+          />
+          <p className="mt-1 text-xs leading-relaxed text-dim">
+            整卡翻譯會照這個速度送出請求，不會等被擋了才放慢。
+            Google AI Studio 免費層大約是 10～15，填 0 代表不限制。
+          </p>
+        </div>
       </div>
     </Modal>
   );

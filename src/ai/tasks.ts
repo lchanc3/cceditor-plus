@@ -42,26 +42,35 @@ export interface TranslateOptions {
 }
 
 /**
- * A pause every request respects.
+ * The pace every request keeps to.
  *
- * Without it, one worker hitting a rate limit backs off while the other two
- * keep hammering the same endpoint — which is how a free-tier RPM allowance
- * gets spent on requests that were never going to succeed.
+ * It does two jobs. It spaces requests out so a per-minute quota is respected
+ * before the endpoint has to say no — reacting to a 429 is too late, since the
+ * quota is already spent and the window takes a minute to roll over. And it is
+ * shared, so one throttled request slows every other one with it rather than
+ * letting the other workers keep spending an allowance that has run out.
  */
 export interface RateGate {
   wait(signal?: AbortSignal): Promise<void>;
   pause(ms: number): void;
 }
 
-export function createRateGate(): RateGate {
-  let until = 0;
+/** `perMinute` of 0 disables pacing; the gate then only reacts to a 429. */
+export function createRateGate(perMinute = 0): RateGate {
+  const spacing = perMinute > 0 ? 60_000 / perMinute : 0;
+  let next = 0;
+
   return {
     async wait(signal) {
-      const remaining = until - Date.now();
-      if (remaining > 0) await delay(remaining, signal);
+      const now = Date.now();
+      // Claim a slot before waiting for it, so concurrent callers queue behind
+      // each other instead of all deciding the same moment is free.
+      const start = Math.max(now, next);
+      next = start + spacing;
+      if (start > now) await delay(start - now, signal);
     },
     pause(ms) {
-      until = Math.max(until, Date.now() + ms);
+      next = Math.max(next, Date.now() + ms);
     },
   };
 }

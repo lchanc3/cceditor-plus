@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CardFields, createEmptyCard, createEmptyLorebookEntry } from '../src/card';
 import {
   cardContext,
+  createRateGate,
   decideTranslations,
   extractTerms,
   sectionContext,
@@ -391,6 +392,72 @@ describe('decideTranslations', () => {
 
     await decideTranslations(provider, fields, pending, options);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('createRateGate', () => {
+  it('spaces requests out to the allowance, before anything is refused', async () => {
+    // Reacting to a 429 is too late: the quota is already spent and the window
+    // takes a minute to roll over.
+    vi.useFakeTimers();
+    const gate = createRateGate(10); // one every 6s
+    const at: number[] = [];
+
+    const run = (async () => {
+      for (let i = 0; i < 3; i++) {
+        await gate.wait();
+        at.push(Date.now());
+      }
+    })();
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await run;
+
+    expect(at[1] - at[0]).toBe(6_000);
+    expect(at[2] - at[1]).toBe(6_000);
+  });
+
+  it('lets concurrent callers queue rather than all going at once', async () => {
+    vi.useFakeTimers();
+    const gate = createRateGate(60); // one per second
+    const at: number[] = [];
+
+    const all = Promise.all(
+      [0, 1, 2].map(async () => {
+        await gate.wait();
+        at.push(Date.now());
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await all;
+
+    expect(new Set(at).size).toBe(3);
+  });
+
+  it('does not pace at all when the allowance is unset', async () => {
+    const gate = createRateGate(0);
+    const started = Date.now();
+    await gate.wait();
+    await gate.wait();
+    expect(Date.now() - started).toBeLessThan(50);
+  });
+
+  it('still absorbs a rejection on top of the pacing', async () => {
+    vi.useFakeTimers();
+    const gate = createRateGate(0);
+    gate.pause(5_000);
+
+    let done = false;
+    const waiting = gate.wait().then(() => {
+      done = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await waiting;
+    expect(done).toBe(true);
   });
 });
 

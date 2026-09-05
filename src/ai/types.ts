@@ -47,6 +47,14 @@ export interface AISettings {
   openai: OpenAISettings;
   targetLang: string;
   temperature: number;
+  /**
+   * Requests per minute the endpoint will tolerate. 0 means unlimited.
+   *
+   * Free Gemini tiers are quota'd per minute rather than per token, so a long
+   * card is throttled halfway through unless the requests are spaced out. The
+   * default leaves headroom under flash-lite's 15.
+   */
+  requestsPerMinute: number;
 }
 
 export const DEFAULT_SETTINGS: AISettings = {
@@ -55,6 +63,7 @@ export const DEFAULT_SETTINGS: AISettings = {
   openai: { baseUrl: 'https://api.openai.com/v1', apiKey: '', model: 'gpt-4o-mini' },
   targetLang: '繁體中文',
   temperature: 0.3,
+  requestsPerMinute: 10,
 };
 
 /** Endpoints people commonly point the OpenAI-compatible provider at. */

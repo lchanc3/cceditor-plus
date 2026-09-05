@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { checkTranslation } from '../src/glossary';
+import { checkTranslation, simplifiedTable } from '../src/glossary';
 
 const zhTW = { targetLang: '繁體中文' };
 const kinds = (source: string, translated: string, options = zhTW) =>
@@ -116,9 +116,84 @@ describe('script check', () => {
     expect(checkTranslation('The elder spoke.', '長老開口了。她說：「來吧。」', zhTW)).toEqual([]);
   });
 
+  it('names the form that was wanted', () => {
+    const issue = checkTranslation('x', '这个', zhTW).find((i) => i.kind === 'script');
+    expect(issue?.message).toContain('这（應為 這）');
+    expect(issue?.message).toContain('个（應為 個）');
+  });
+
   it('lists each offending character once', () => {
     const issue = checkTranslation('x', '这个这个', zhTW).find((i) => i.kind === 'script');
-    expect(issue?.message).toContain('这、个');
+    expect(issue?.message.match(/这/g)).toHaveLength(1);
+  });
+
+  it('covers the systematic radical families', () => {
+    // These are where simplified characters actually come from, so a gap here
+    // matters far more than a gap in the long tail.
+    for (const text of ['说话', '钱银', '红线', '财货', '转轮', '问间', '骑马', '鸡鸭', '鱼鲜', '观见', '页顶', '风飘', '饭饮', '围韩', '龙笼', '齐剂']) {
+      expect(kinds('x', text)).toContain('script');
+    }
+  });
+});
+
+describe('the simplified table itself', () => {
+  const table = simplifiedTable();
+
+  it('never lists a character that is valid traditional Chinese', () => {
+    // A false alarm on 皇后 or 公里 would teach the reader to ignore the check,
+    // which costs more than missing a rare character ever could.
+    for (const [text, why] of [
+      ['皇后與太后', '后'],
+      ['台北', '台'],
+      ['公里', '里'],
+      ['只有一個', '只'],
+      ['天干地支', '干'],
+      ['面對面', '面'],
+      ['表面', '表'],
+      ['系統', '系'],
+      ['制度', '制'],
+      ['划船', '划'],
+      ['松樹', '松'],
+      ['山谷', '谷'],
+      ['丑時', '丑'],
+      ['北斗', '斗'],
+      ['茶几', '几'],
+      ['占卜', '卜'],
+      ['詩云', '云'],
+      ['宿舍', '舍'],
+      ['借用', '借'],
+      ['折斷', '折'],
+      ['布匹', '布'],
+      ['風采', '采'],
+      ['志向', '志'],
+      ['克服', '克'],
+      ['困難', '困'],
+      ['御用', '御'],
+      ['秋天', '秋'],
+    ] as const) {
+      expect(table.has(why)).toBe(false);
+      expect(checkTranslation('x', text, zhTW)).toEqual([]);
+    }
+  });
+
+  it('maps every entry to a different character', () => {
+    for (const [simplified, traditional] of table) {
+      expect(simplified).not.toBe(traditional);
+      expect(simplified).toHaveLength(1);
+      expect(traditional).toHaveLength(1);
+    }
+  });
+
+  it('never treats a traditional form as simplified as well', () => {
+    // Otherwise a correct translation would be flagged for the very character
+    // the table says to use.
+    for (const traditional of table.values()) {
+      expect(table.has(traditional)).toBe(false);
+    }
+  });
+
+  it('is large enough to be worth calling a table', () => {
+    expect(table.size).toBeGreaterThan(500);
   });
 });
 

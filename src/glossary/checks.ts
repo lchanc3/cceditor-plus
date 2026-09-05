@@ -30,17 +30,139 @@ export interface TranslationIssue {
 const MACRO = /\{\{[^{}\n]{1,40}\}\}|<START>/gi;
 
 /**
- * A sampling of characters that exist only in the simplified set, weighted
- * towards the ones that actually turn up in machine translation. Not a
- * conversion table — a leak detector. Missing a character costs nothing;
- * listing one that is valid traditional would cost a false alarm, so anything
- * shared by both scripts is deliberately absent.
+ * Simplified characters and the traditional form each one should have been.
+ *
+ * Pairs rather than a bare list, for two reasons: the report can name the form
+ * that was wanted, and anyone can check an entry by looking at it.
+ *
+ * The systematic radical families are covered in full, because those are where
+ * the characters actually come from. What this is not is the complete 简化字总表
+ * — that runs to some 2,300 characters, most of which will never appear in a
+ * translation whose surrounding text is already traditional.
+ *
+ * The stricter constraint is the one below: a false alarm is worse than a miss.
  */
-const SIMPLIFIED_ONLY =
-  '个们这来过时现发后会说对应当种样还让实进国东车马鸟龙点热爱见觉学写词语关门问间无书长风飞产业务严' +
-  '与为义乐习乡亚亲从仅仓传伟伤体众优儿兰兴军农净划动劳势医卖单卫参双变号叶吗员响启声备复头夺奋' +
-  '妆娱婴孙宁宝宠审层岁岛币师帮带帐广庆库归录彻忆忧怀态总恋恳惊惧惨战户扑执扩扫扬担拟拥择挂挤挥' +
-  '损换据摆敌数断显晓机权杀条来构枪柜标栋树桥检楼欢汉汤沟没浅测济浏渐渔湿满滨滚灭灯灵烦烧热爱';
+const AMBIGUOUS = [
+  // Every one of these is correct traditional Chinese in its own right, even
+  // though it is also the simplified form of something else. Flagging 皇后 or
+  // 這里 as an error would train the reader to ignore the check.
+  '后', // 皇后, but also simplified 後
+  '台', // 台北, but also simplified 臺
+  '里', // 公里, but also simplified 裏
+  '只', // 只有, but also simplified 隻
+  '干', // 干支, but also simplified 乾 / 幹
+  '面', // 面對, but also simplified 麵
+  '表', // 表面, but also simplified 錶
+  '系', // 系統, but also simplified 係 / 繫
+  '制', // 制度, but also simplified 製
+  '划', // 划船, but also simplified 劃
+  '松', // 松樹, but also simplified 鬆
+  '谷', // 山谷, but also simplified 穀
+  '丑', // 丑時, but also simplified 醜
+  '斗', // 北斗, but also simplified 鬥
+  '几', // 茶几, but also simplified 幾
+  '卜', // 占卜, but also simplified 蔔
+  '云', // 子曰詩云, but also simplified 雲
+  '姜', // a surname, but also simplified 薑
+  '借', // 借用, but also simplified 藉
+  '帘', // 酒帘, but also simplified 簾
+  '卷', // 卷軸, but also simplified 捲
+  '曲', // 歌曲, but also simplified 麯
+  '舍', // 宿舍, but also simplified 捨
+  '胡', // 胡人, but also simplified 鬍
+  '折', // 折斷, but also simplified 摺
+  '布', // 布匹, but also simplified 佈
+  '于', // a surname, but also simplified 於
+  '余', // 余曰, but also simplified 餘
+  '沈', // a surname, but also simplified 瀋
+  '朴', // a surname, but also simplified 樸
+  '克', // 克服, but also simplified 剋
+  '困', // 困難, but also simplified 睏
+  '御', // 御用, but also simplified 禦
+  '采', // 風采, but also simplified 採
+  '志', // 志向, but also simplified 誌
+  '咸', // 咸豐, but also simplified 鹹
+  '术', // 白术 the herb, but also simplified 術
+  '涌', // 洶涌, but also simplified 湧
+  '秋', // 秋天, but also simplified 鞦
+  '辟', // 復辟, but also simplified 闢
+  '冲', // a variant in its own right, but also simplified 沖 / 衝
+];
+
+/** Simplified, then the traditional form, two characters at a time. */
+const PAIRS =
+  // 訁
+  '计計订訂讣訃认認讥譏讨討让讓讪訕讫訖训訓议議讯訊记記讲講讳諱讴謳讶訝讷訥许許讹訛论論讼訟讽諷' +
+  '设設访訪诀訣证證评評诅詛识識诈詐诉訴诊診诋詆词詞译譯诓誆试試诗詩诘詰诙詼诚誠诛誅话話诞誕' +
+  '诠詮诡詭询詢诣詣该該详詳诧詫语語诫誡误誤诰誥诱誘诲誨诳誑说說诵誦请請诸諸诺諾读讀诽誹课課' +
+  '诿諉谀諛谁誰调調谄諂谅諒谆諄谈談谊誼谋謀谍諜谎謊谏諫谐諧谑謔谒謁谓謂谕諭谗讒谘諮谙諳谚諺' +
+  '谛諦谜謎谟謨谢謝谣謠谤謗谦謙谨謹谩謾谬謬谭譚谱譜谴譴谶讖誉譽' +
+  // 釒
+  '钉釘钊釗钓釣钙鈣钝鈍钞鈔钟鐘钠鈉钢鋼钥鑰钦欽钧鈞钩鈎钮鈕钱錢钳鉗钻鑽铁鐵铃鈴铅鉛铆鉚铜銅' +
+  '铝鋁铠鎧铡鍘铭銘铲鏟银銀铸鑄铺鋪链鏈销銷锁鎖锄鋤锅鍋锈鏽锋鋒锐銳错錯锚錨锡錫锣鑼锤錘锥錐' +
+  '锦錦键鍵锯鋸锰錳锻鍛镀鍍镇鎮镊鑷镜鏡镑鎊镖鏢镰鐮镶鑲铂鉑针針' +
+  // 糹
+  '纠糾红紅纣紂纤纖约約级級纪紀纫紉纬緯纯純纱紗纲綱纳納纵縱纷紛纸紙纹紋纺紡纽紐线線练練组組' +
+  '绅紳细細织織终終绊絆绍紹绎繹经經绑綁绒絨结結绕繞绘繪给給绚絢络絡绝絕绞絞统統绢絹绣繡继繼' +
+  '绩績绪緒续續绮綺绰綽绳繩维維绵綿绶綬绷繃绸綢综綜绽綻绿綠缀綴缄緘缅緬缆纜缉緝缎緞缓緩缔締' +
+  '缕縷编編缘緣缚縛缜縝缝縫缠纏缤繽缨纓缩縮缪繆缭繚缰韁缴繳' +
+  // 貝
+  '贝貝贞貞负負贡貢财財责責贤賢败敗账賬货貨质質贩販贪貪贫貧贯貫贮貯贰貳贱賤贴貼贵貴贷貸贸貿' +
+  '费費贺賀贼賊贾賈贿賄赁賃赂賂资資赈賑赊賒赋賦赌賭赎贖赏賞赐賜赔賠赖賴赘贅赚賺赛賽赝贗赞贊' +
+  '赠贈赡贍赢贏赣贛员員贬貶购購' +
+  // 車
+  '车車轧軋轨軌轩軒转轉轮輪软軟轰轟轴軸轻輕载載轿轎较較辄輒辅輔辆輛辈輩辉輝辐輻辑輯输輸辖轄' +
+  '辗輾辙轍辘轆轼軾辕轅' +
+  // 門
+  '门門闪閃闭閉问問闯闖闲閒间間闷悶闸閘闹鬧闺閨闻聞闽閩阀閥阁閣阅閱阎閻阐闡阔闊阑闌阙闕关關联聯' +
+  // 馬
+  '马馬驮馱驯馴驰馳驱驅驳駁驴驢驶駛驹駒驻駐驼駝驾駕骂罵骄驕骆駱骇駭骋騁验驗骏駿骑騎骗騙骚騷' +
+  '骤驟骡騾惊驚妈媽码碼蚂螞玛瑪吗嗎' +
+  // 鳥 · 魚
+  '鸟鳥鸠鳩鸡雞鸣鳴鸦鴉鸭鴨鸯鴦鸳鴛鸽鴿鹅鵝鹉鵡鹊鵲鹏鵬鹤鶴鹦鸚鹰鷹鸥鷗鸵鴕鹃鵑鸿鴻鹭鷺鸾鸞' +
+  '鱼魚鲁魯鲍鮑鲜鮮鲤鯉鲨鯊鲸鯨鳃鰓鳍鰭鳞鱗鲈鱸鳄鱷鲫鯽鲷鯛鳖鱉' +
+  // 見 · 頁 · 風 · 飠
+  '见見观觀规規觅覓视視觉覺览覽亲親现現觐覲' +
+  '页頁顶頂顷頃项項顺順须須顽頑顾顧顿頓颂頌预預领領颇頗颈頸颊頰颐頤频頻颓頹颖穎颗顆题題颜顏' +
+  '额額颠顛颤顫颧顴类類颁頒' +
+  '风風飒颯飓颶飘飄飙飆' +
+  '饥飢饭飯饮飲饰飾饱飽饲飼饵餌饶饒饺餃饼餅饿餓馆館馈饋馒饅饷餉' +
+  // 韋 · 龍 · 齊 · 東 · 專 · 義
+  '韦韋违違围圍韩韓韧韌卫衛' +
+  '龙龍垄壟拢攏笼籠聋聾咙嚨陇隴宠寵庞龐袭襲' +
+  '齐齊剂劑济濟挤擠脐臍' +
+  '东東冻凍陈陳栋棟拣揀' +
+  '专專传傳砖磚团團' +
+  '义義仪儀蚁蟻' +
+  // Standalone, by rough frequency
+  '个個们們这這来來过過时時发發会會对對应應当當种種样樣还還实實进進国國点點热熱爱愛学學写寫' +
+  '无無书書长長飞飛产產业業务務严嚴与與为為乐樂习習乡鄉亚亞从從仅僅仓倉伟偉伤傷体體众眾优優' +
+  '儿兒兰蘭兴興军軍农農净淨动動劳勞势勢医醫卖賣单單参參双雙变變号號叶葉响響启啟声聲备備复復' +
+  '头頭夺奪奋奮妆妝娱娛婴嬰孙孫宁寧宝寶审審层層岁歲岛島币幣师師帮幫带帶帐帳广廣庆慶库庫归歸' +
+  '录錄彻徹忆憶忧憂怀懷态態总總恋戀恳懇惧懼惨慘战戰户戶扑撲执執扩擴扫掃扬揚担擔拟擬拥擁择擇' +
+  '挂掛挥揮损損换換据據摆擺敌敵数數断斷显顯晓曉机機权權杀殺条條构構枪槍柜櫃标標树樹桥橋检檢' +
+  '楼樓欢歡汉漢汤湯沟溝浅淺测測浏瀏渐漸渔漁湿濕满滿滨濱滚滾灭滅灯燈灵靈烦煩烧燒营營犹猶状狀' +
+  '独獨狮獅猪豬献獻环環疗療疯瘋痒癢皱皺盘盤睐睞矫矯硕碩确確碍礙礼禮祷禱离離秃禿积積称稱稳穩' +
+  '穷窮窃竊竖豎笔筆笋筍筑築简簡箫簫签簽篮籃紧緊罗羅罚罰罢罷羁羈翘翹耻恥聂聶职職肠腸肤膚肿腫' +
+  '胀脹脑腦脓膿脸臉腊臘腻膩舰艦艰艱艳艷节節芦蘆苏蘇苹蘋茎莖荐薦荡蕩药藥莱萊萝蘿蒋蔣蓝藍蔷薔' +
+  '虏虜虑慮虾蝦蚀蝕蜡蠟蝇蠅蝉蟬补補袄襖装裝赶趕趋趨跃躍践踐踌躊蹑躡辞辭边邊达達迁遷运運连連' +
+  '迟遲适適选選逊遜递遞逻邏遗遺邓鄧邮郵郑鄭邻鄰酝醞释釋队隊阶階阳陽阴陰陆陸险險隐隱难難雏雛' +
+  '杂雜电電霉黴静靜卤滷麦麥齿齒龄齡龈齦龟龜别別却卻处處尔爾万萬汇匯尽盡历歷钟鐘须鬚';
+
+/** Built once: every simplified character mapped to what it should have been. */
+const TRADITIONAL_FOR = (() => {
+  const map = new Map<string, string>();
+  const ambiguous = new Set(AMBIGUOUS);
+  for (let i = 0; i + 1 < PAIRS.length; i += 2) {
+    const simplified = PAIRS[i];
+    if (ambiguous.has(simplified)) continue;
+    if (!map.has(simplified)) map.set(simplified, PAIRS[i + 1]);
+  }
+  return map;
+})();
+
+/** Exposed so a test can hold the table to its own rules. */
+export const simplifiedTable = (): ReadonlyMap<string, string> => TRADITIONAL_FOR;
 
 const NOTE_PATTERNS: { re: RegExp; message: string }[] = [
   {
@@ -118,11 +240,14 @@ export function checkTranslation(
 
   // --- script ---------------------------------------------------------------
   if (wantsTraditional(options.targetLang ?? '')) {
-    const found = [...new Set([...translated].filter((ch) => SIMPLIFIED_ONLY.includes(ch)))];
+    const found = [...new Set([...translated].filter((ch) => TRADITIONAL_FOR.has(ch)))];
     if (found.length > 0) {
       issues.push({
         kind: 'script',
-        message: `譯文裡有簡體字：${found.join('、')}`,
+        // Naming the form that was wanted turns a complaint into a correction.
+        message: `譯文裡有簡體字：${found
+          .map((ch) => `${ch}（應為 ${TRADITIONAL_FOR.get(ch)}）`)
+          .join('、')}`,
         excerpt: excerptAround(translated, translated.indexOf(found[0])),
       });
     }

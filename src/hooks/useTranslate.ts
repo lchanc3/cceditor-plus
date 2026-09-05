@@ -4,6 +4,7 @@ import {
   AISettings,
   cardContext,
   createProvider,
+  createRateGate,
   decideTranslations,
   describeError,
   extractTerms,
@@ -60,6 +61,13 @@ export function useTranslate(
 
   const provider = useMemo(() => createProvider(settings), [settings]);
 
+  // One budget for the endpoint, shared by every task: the glossary passes and
+  // a whole-card run draw on the same per-minute quota.
+  const gate = useMemo(
+    () => createRateGate(settings.requestsPerMinute),
+    [settings.requestsPerMinute],
+  );
+
   const run = useCallback(
     async <T>(key: string, task: (signal: AbortSignal) => Promise<T>): Promise<T | null> => {
       controllers.current.get(key)?.abort();
@@ -111,11 +119,13 @@ export function useTranslate(
           ...(fields
             ? { card: cardContext(fields, key), section: sectionContext(fields, key) }
             : {}),
+          gate,
           signal,
         }),
       ),
     [
       fields,
+      gate,
       meta.glossary,
       meta.styleNotes,
       provider,
@@ -128,9 +138,9 @@ export function useTranslate(
   const translateKeys = useCallback(
     (key: string, keywords: string[]) =>
       run(key, (signal) =>
-        translateKeywords(provider, keywords, { targetLang: settings.targetLang, signal }),
+        translateKeywords(provider, keywords, { targetLang: settings.targetLang, gate, signal }),
       ),
-    [provider, run, settings.targetLang],
+    [gate, provider, run, settings.targetLang],
   );
 
   /** Propose the proper nouns the lorebook keys did not already cover. */
@@ -139,11 +149,12 @@ export function useTranslate(
       run(EXTRACT_KEY, (signal) =>
         extractTerms(provider, fields, {
           targetLang: settings.targetLang,
+          gate,
           signal,
           onProgress: step(EXTRACT_KEY),
         }),
       ),
-    [provider, run, settings.targetLang, step],
+    [gate, provider, run, settings.targetLang, step],
   );
 
   /** Settle a translation for every term that has none. */
@@ -152,11 +163,12 @@ export function useTranslate(
       run(DECIDE_KEY, (signal) =>
         decideTranslations(provider, fields, terms, {
           targetLang: settings.targetLang,
+          gate,
           signal,
           onProgress: step(DECIDE_KEY),
         }),
       ),
-    [provider, run, settings.targetLang, step],
+    [gate, provider, run, settings.targetLang, step],
   );
 
   /**
@@ -171,12 +183,14 @@ export function useTranslate(
           temperature: settings.temperature,
           glossary: meta.glossary,
           styleNotes: meta.styleNotes,
+          gate,
           signal,
           only,
           onProgress: step(CARD_KEY),
         }),
       ),
     [
+      gate,
       meta.glossary,
       meta.styleNotes,
       provider,
