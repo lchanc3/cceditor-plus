@@ -111,7 +111,10 @@ function EntryCard({
   const [open, setOpen] = useState(false);
 
   return (
-    <li className="rounded border border-line bg-field/60 p-3 sm:p-4">
+    <li
+      id={`lore-${index}`}
+      className="scroll-mt-4 rounded border border-line bg-field/60 p-3 sm:p-4"
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs">
           <span className="font-bold text-dim">#{index + 1}</span>

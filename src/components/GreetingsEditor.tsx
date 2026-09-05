@@ -45,7 +45,7 @@ export function GreetingsEditor({
           {greetings.map((greeting, index) => {
             const key = `greeting:${index}`;
             return (
-              <li key={index} className="space-y-2">
+              <li key={index} id={`greeting-${index}`} className="scroll-mt-4 space-y-2">
                 {/* Controls are always visible: on a touch screen there is no hover. */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-bold text-dim">#{index + 1}</span>

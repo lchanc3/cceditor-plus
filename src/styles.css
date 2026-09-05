@@ -115,4 +115,30 @@
   .scroll-x::-webkit-scrollbar-thumb {
     @apply rounded bg-line-bright;
   }
+
+  /*
+   * Marks where a jump landed. Scrolling alone leaves the reader hunting for
+   * which of twenty near-identical lorebook entries they were sent to.
+   */
+  .flash {
+    animation: flash 1.6s ease-out;
+  }
+
+  @keyframes flash {
+    0%,
+    40% {
+      box-shadow: 0 0 0 2px var(--color-gold);
+    }
+    100% {
+      box-shadow: 0 0 0 2px transparent;
+    }
+  }
+
+  /* Respect a reader who asked for less motion; the outline still shows. */
+  @media (prefers-reduced-motion: reduce) {
+    .flash {
+      animation-duration: 0.01s;
+      box-shadow: 0 0 0 2px var(--color-gold);
+    }
+  }
 }

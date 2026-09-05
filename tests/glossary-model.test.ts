@@ -144,14 +144,36 @@ describe('seedTerms', () => {
     expect(seeded[1]).toEqual(term({ source: 'Keep', origin: 'lore-key' }));
   });
 
-  it('skips regex entries, whose keys are patterns rather than names', () => {
+  it('skips keys that are genuinely patterns', () => {
     const fields = card({
       character_book: lore([
-        { keys: ['^(the )?elders?$'], use_regex: true },
+        { keys: ['^(the )?elders?$', 'stone|rock', '/ash.*/i'], use_regex: true },
         { keys: ['Emberwright'] },
       ]),
     });
     expect(seedTerms(fields).map((t) => t.source)).toEqual(['Emberwright']);
+  });
+
+  it('keeps plain keys on an entry whose regex flag is set', () => {
+    // A real card had use_regex on all twenty entries while every key was an
+    // ordinary word. Skipping on the flag alone lost the lot.
+    const fields = card({
+      character_book: lore([
+        { keys: ['sacred shield', 'cathedral', 'sisters'], use_regex: true },
+        { keys: ['C.H.I.P.'], use_regex: true },
+      ]),
+    });
+    expect(seedTerms(fields).map((t) => t.source)).toEqual([
+      'sacred shield',
+      'cathedral',
+      'sisters',
+      'C.H.I.P.',
+    ]);
+  });
+
+  it('keeps a key with brackets when the entry is not a regex entry', () => {
+    const fields = card({ character_book: lore([{ keys: ['Elder (Grand)'] }]) });
+    expect(seedTerms(fields).map((t) => t.source)).toEqual(['Elder (Grand)']);
   });
 
   it('skips macros and keys with no letters', () => {

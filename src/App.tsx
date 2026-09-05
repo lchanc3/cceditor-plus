@@ -80,6 +80,8 @@ export default function App() {
   const [unapplied, setUnapplied] = useState<Set<string>>(new Set());
   /** The outcome of the last translation run, until it is dismissed. */
   const [report, setReport] = useState<RunReport | null>(null);
+  /** Element id a jump is heading for, cleared once the scroll has happened. */
+  const [pendingScroll, setPendingScroll] = useState<string | null>(null);
 
   const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
@@ -356,16 +358,41 @@ export default function App() {
     );
   }, [model, state.glossary]);
 
-  /** Term occurrences are addressed by section path; tabs are not. */
+  /**
+   * Term occurrences and report entries are addressed by section path; tabs are
+   * not, and a tab holding twenty lorebook entries is not somewhere a link has
+   * arrived until it lands on the right one.
+   */
   const jumpToPath = useCallback((path: string) => {
-    if (path.startsWith('greeting:')) return setActiveTab('greetings');
-    if (path.startsWith('lore:')) return setActiveTab('lorebook');
+    const entry = /^(greeting|lore):(\d+)$/.exec(path);
+    if (entry) {
+      setActiveTab(entry[1] === 'lore' ? 'lorebook' : 'greetings');
+      setPendingScroll(`${entry[1]}-${entry[2]}`);
+      return;
+    }
+
+    setPendingScroll(null);
     if (path === 'name' || path === 'creator_notes') return setActiveTab('basic');
     if (path === 'system_prompt' || path === 'post_history_instructions') {
       return setActiveTab('advanced');
     }
     setActiveTab(path);
   }, []);
+
+  // The target only exists once the new tab has rendered, so the scroll waits
+  // for the commit rather than happening inside the click handler.
+  useEffect(() => {
+    if (!pendingScroll) return;
+    setPendingScroll(null);
+
+    const target = document.getElementById(pendingScroll);
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // A brief outline, because scrolling alone leaves the reader hunting for
+    // which of twenty identical-looking entries they were sent to.
+    target.classList.add('flash');
+    window.setTimeout(() => target.classList.remove('flash'), 1600);
+  }, [pendingScroll, activeTab]);
 
   // ---- tabs --------------------------------------------------------------
 

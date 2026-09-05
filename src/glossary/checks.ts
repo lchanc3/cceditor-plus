@@ -101,8 +101,14 @@ export function checkTranslation(
   }
 
   // --- structure ------------------------------------------------------------
-  const sourceLines = countOf(source, '\n');
-  const translatedLines = countOf(translated.replace(/\r\n/g, '\n'), '\n');
+  //
+  // Both sides are trimmed first. `cleanOutput` strips surrounding whitespace
+  // from every translation, so a source ending in a newline always came back
+  // exactly one short — which flagged seventeen of eighteen lorebook entries on
+  // a real card while telling the reader nothing. Only breaks *inside* the text
+  // are structure.
+  const sourceLines = countOf(source.trim(), '\n');
+  const translatedLines = countOf(translated.replace(/\r\n/g, '\n').trim(), '\n');
   if (sourceLines !== translatedLines) {
     issues.push({
       kind: 'structure',

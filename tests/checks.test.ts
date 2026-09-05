@@ -64,7 +64,8 @@ describe('macro checks', () => {
   });
 
   it('watches <START> as well', () => {
-    expect(kinds('<START>\na', '\na')).toEqual(['macro']);
+    // Same line count either side, so only the macro check should fire.
+    expect(kinds('<START>\na', '開始\na')).toEqual(['macro']);
   });
 
   it('ignores case, the way the engine does', () => {
@@ -79,6 +80,18 @@ describe('macro checks', () => {
 describe('structure check', () => {
   it('reports a changed paragraph count', () => {
     expect(kinds('a\nb\nc', '甲\n乙')).toEqual(['structure']);
+  });
+
+  it('ignores a trailing newline the output trim removed', () => {
+    // `cleanOutput` strips surrounding whitespace from every translation, so
+    // without this a source ending in a newline flagged every single section —
+    // seventeen of eighteen lorebook entries on a real card, all spurious.
+    expect(checkTranslation('a\nb\n', '甲\n乙', zhTW)).toEqual([]);
+    expect(checkTranslation('\n\na\nb\n\n', '甲\n乙', zhTW)).toEqual([]);
+  });
+
+  it('still reports paragraphs that were actually merged', () => {
+    expect(kinds('a\n\nb\n\nc', '甲 乙 丙')).toEqual(['structure']);
   });
 
   it('treats CRLF as one break, since SillyTavern rewrites line endings', () => {

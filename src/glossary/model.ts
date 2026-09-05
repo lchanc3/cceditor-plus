@@ -75,6 +75,19 @@ const isMacro = (text: string): boolean => /^\{\{.*\}\}$/.test(text.trim());
 const hasLetters = (text: string): boolean => /\p{L}/u.test(text);
 
 /**
+ * Whether a key actually uses regex syntax.
+ *
+ * The `use_regex` flag is not enough on its own: a real card had it set on all
+ * twenty of its entries while every key was an ordinary word — `sacred shield`,
+ * `cathedral`, `sisters`. Skipping on the flag alone threw away nineteen
+ * entries' worth of free seeding. So the key's own shape decides.
+ *
+ * `.` is deliberately not a metacharacter here, since plain names contain it.
+ */
+const looksLikeRegex = (key: string): boolean =>
+  /^\/.*\/[gimsuy]*$/.test(key) || /[\\^$*+?()[\]{}|]/.test(key);
+
+/**
  * Scripts that write with spaces need word boundaries, or `Kael` matches inside
  * `Kaelen`. CJK writes without them, where the same rule would match nothing, so
  * those go by plain substring.
@@ -168,8 +181,10 @@ export function seedTerms(fields: CardFields): GlossaryTerm[] {
   if (fields.nickname) add(fields.nickname, 'name', 'person');
 
   for (const entry of fields.character_book?.entries ?? []) {
-    if (entry.use_regex) continue;
     for (const key of [...entry.keys, ...(entry.secondary_keys ?? [])]) {
+      // Only a key that is genuinely a pattern is skipped, not every key on an
+      // entry whose regex flag happens to be set.
+      if (entry.use_regex && looksLikeRegex(key)) continue;
       add(key, 'lore-key', 'other');
     }
   }
