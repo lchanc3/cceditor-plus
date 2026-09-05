@@ -121,7 +121,10 @@ export function createGeminiProvider(settings: GeminiSettings): Provider {
         const reason = candidate?.finishReason ?? data.promptFeedback?.blockReason ?? '';
         throw new ProviderError(
           FINISH_REASON_HINTS[reason] ?? `Gemini 沒有回傳內容${reason ? `（原因：${reason}）` : ''}。`,
-          { retryable: reason === '' },
+          // A named reason is always about this particular text — safety,
+          // recitation, length. No reason at all is an unexplained empty
+          // response, which is worth another try.
+          { retryable: reason === '', filtered: reason !== '' },
         );
       }
       return text;

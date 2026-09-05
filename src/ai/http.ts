@@ -1,5 +1,8 @@
 import { ProviderError } from './types';
 
+/** How the common endpoints word a content-policy rejection in an error body. */
+const CONTENT_POLICY = /content[_ -]?(?:filter|policy)|responsible ?ai|safety/i;
+
 /** HTTP statuses worth retrying: rate limits and transient server errors. */
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
@@ -24,9 +27,14 @@ export async function requestJson<T>(
   const body = await response.text();
 
   if (!response.ok) {
-    throw new ProviderError(`${context}失敗（HTTP ${response.status}）：${extractError(body)}`, {
+    const detail = extractError(body);
+    throw new ProviderError(`${context}失敗（HTTP ${response.status}）：${detail}`, {
       status: response.status,
       retryable: RETRYABLE_STATUS.has(response.status),
+      // Azure OpenAI and several proxies report a blocked prompt as a 400
+      // rather than a finish_reason. Recognising it keeps one blocked section
+      // from being mistaken for a broken endpoint and stopping a whole run.
+      filtered: response.status === 400 && CONTENT_POLICY.test(detail),
     });
   }
 

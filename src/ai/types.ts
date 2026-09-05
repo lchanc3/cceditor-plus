@@ -82,7 +82,12 @@ export const TARGET_LANGUAGES = [
 export class ProviderError extends Error {
   constructor(
     message: string,
-    readonly options: { status?: number; retryable?: boolean; cause?: unknown } = {},
+    readonly options: {
+      status?: number;
+      retryable?: boolean;
+      filtered?: boolean;
+      cause?: unknown;
+    } = {},
   ) {
     super(message);
     this.name = 'ProviderError';
@@ -90,5 +95,18 @@ export class ProviderError extends Error {
 
   get retryable(): boolean {
     return this.options.retryable ?? false;
+  }
+
+  /**
+   * A content filter rejected this particular text.
+   *
+   * The distinction drives whole-card translation: a filtered section says
+   * nothing about the other nineteen, whereas a bad key or a wrong model name
+   * will fail every one of them identically. Status codes cannot carry this —
+   * Gemini answers a bad key with 400, the same code an endpoint uses to reject
+   * an unknown parameter.
+   */
+  get filtered(): boolean {
+    return this.options.filtered ?? false;
   }
 }

@@ -39,7 +39,11 @@ async function sendWithJsonFallback<T>(send: (json: boolean) => Promise<T>): Pro
     return await send(true);
   } catch (error) {
     if ((error as Error).name === 'AbortError') throw error;
-    const status = error instanceof ProviderError ? error.options.status : undefined;
+    if (!(error instanceof ProviderError)) throw error;
+    // A 400 that is really a blocked prompt would fail again without the
+    // parameter, so it is not worth a second round trip.
+    if (error.filtered) throw error;
+    const { status } = error.options;
     if (status === undefined || !PARAMETER_REJECTED.has(status)) throw error;
     return send(false);
   }
@@ -112,7 +116,7 @@ export function createOpenAIProvider(settings: OpenAISettings): Provider {
           reason === 'content_filter'
             ? '內容被服務端的過濾器攔截，未回傳翻譯結果。'
             : `模型沒有回傳內容${reason ? `（finish_reason: ${reason}）` : ''}。`,
-          { retryable: reason !== 'content_filter' },
+          { retryable: reason !== 'content_filter', filtered: reason === 'content_filter' },
         );
       }
       return text;
