@@ -48,7 +48,7 @@ export default function App() {
     null,
   );
 
-  const translate = useTranslate(settings);
+  const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
 
   // ---- draft persistence -------------------------------------------------
