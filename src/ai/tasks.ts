@@ -1,28 +1,77 @@
 /**
  * Translation tasks.
  *
- * The prompts are carried over from the previous version — they were well
+ * The translation prompt is carried over from the previous version — it was well
  * tuned, particularly the instruction to leave {{char}} / {{user}} macros alone
  * and to emit nothing but the translation. What is new here is cancellation,
- * retry on transient failures, and a concurrency cap for whole-card runs.
+ * retry on transient failures, a concurrency cap for whole-card runs, and the
+ * glossary: two passes that agree on the proper nouns up front, and a block
+ * pinning them into every translation request afterwards.
  */
 
+import type { CardFields } from '../card';
+import {
+  CardSection,
+  GlossaryTerm,
+  TERM_KINDS,
+  TermKind,
+  cardSections,
+  termsInText,
+} from '../glossary';
+import { parseJsonItems } from './json';
 import { ChatMessage, Provider, ProviderError } from './types';
 
 export interface TranslateOptions {
   targetLang: string;
   temperature?: number;
   signal?: AbortSignal;
+  /**
+   * The whole glossary. Only the terms the text actually contains are sent, so
+   * a 200-term card still produces a short prompt.
+   */
+  glossary?: GlossaryTerm[];
+  /** Register, pronouns, forms of address — what the glossary cannot pin down. */
+  styleNotes?: string;
 }
 
-const systemPrompt = (targetLang: string) => `你是一位專業的角色設定翻譯。請將以下內容翻譯成${targetLang}。
+/** Reported as a progress step so a multi-request pass can show where it is. */
+export type ProgressFn = (done: number, total: number) => void;
+
+/** A term is only worth sending once somebody has decided what to do with it. */
+const isDecided = (term: GlossaryTerm): boolean =>
+  term.keepOriginal || term.target.trim() !== '';
+
+function glossaryBlock(terms: GlossaryTerm[]): string {
+  const decided = terms.filter(isDecided);
+  if (decided.length === 0) return '';
+
+  const lines = decided.map((term) =>
+    term.keepOriginal ? `${term.source} => 保留原文，不可翻譯` : `${term.source} => ${term.target}`,
+  );
+
+  return `
+
+【術語表 — 必須嚴格採用】
+${lines.join('\n')}
+
+術語表規則：
+- 表中的詞每次出現，一律使用指定譯名，不得改譯、簡稱或加註。
+- 標示「保留原文」的詞，維持原文拼寫不翻譯。
+- 未列在表中的專有名詞，依你的判斷翻譯，但同一段內必須前後一致。`;
+}
+
+const styleBlock = (notes: string | undefined): string =>
+  notes?.trim() ? `\n\n【文風要求】\n${notes.trim()}` : '';
+
+const systemPrompt = (options: TranslateOptions, pinned: GlossaryTerm[]) =>
+  `你是一位專業的角色設定翻譯。請將以下內容翻譯成${options.targetLang}。
 
 【嚴格指令】：
 1. 保持角色的語氣與性格特徵。
 2. 絕對保留所有技術性格式與變數（如 {{char}}, {{user}}, <START>, {{original}} 等），不可翻譯或改寫。
 3. 保留原文的換行與段落結構。
 4. 絕不輸出任何解釋、開場白或是結尾語（例如：「這是一份翻譯...」）。
-5. 只允許輸出純粹的翻譯內容。`;
+5. 只允許輸出純粹的翻譯內容。${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
 
 const MAX_ATTEMPTS = 3;
 
@@ -40,21 +89,13 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-async function chatWithRetry(
-  provider: Provider,
-  messages: ChatMessage[],
-  options: TranslateOptions,
-): Promise<string> {
+async function withRetry<T>(run: () => Promise<T>, options: TranslateOptions): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     options.signal?.throwIfAborted();
     try {
-      return await provider.chat(messages, {
-        temperature: options.temperature ?? 0.3,
-        topP: 0.8,
-        signal: options.signal,
-      });
+      return await run();
     } catch (error) {
       if ((error as Error).name === 'AbortError') throw error;
       lastError = error;
@@ -65,6 +106,48 @@ async function chatWithRetry(
     }
   }
   throw lastError;
+}
+
+function chatWithRetry(
+  provider: Provider,
+  messages: ChatMessage[],
+  options: TranslateOptions,
+): Promise<string> {
+  return withRetry(
+    () =>
+      provider.chat(messages, {
+        temperature: options.temperature ?? 0.3,
+        topP: 0.8,
+        signal: options.signal,
+      }),
+    options,
+  );
+}
+
+/**
+ * Ask for a JSON list and parse it.
+ *
+ * The parse happens *inside* the retried closure on purpose: malformed JSON is
+ * a retryable `ProviderError`, and asking the same question again is usually
+ * what fixes it. Parsing outside the loop would waste that.
+ */
+function chatJson<T>(
+  provider: Provider,
+  messages: ChatMessage[],
+  options: TranslateOptions,
+  key: string,
+  context: string,
+): Promise<T[]> {
+  return withRetry(async () => {
+    const text = await provider.chat(messages, {
+      // Naming and extraction are recall tasks, not creative ones.
+      temperature: 0.1,
+      topP: 0.8,
+      json: true,
+      signal: options.signal,
+    });
+    return parseJsonItems<T>(text, key, context);
+  }, options);
 }
 
 /** Strip a wrapper the model added despite being told not to. */
@@ -82,10 +165,14 @@ export async function translateText(
 ): Promise<string> {
   if (!content.trim()) return content;
 
+  // Filtering here rather than at the call site means a caller cannot forget to
+  // do it and quietly send the whole glossary with every field.
+  const pinned = options.glossary ? termsInText(content, options.glossary) : [];
+
   const text = await chatWithRetry(
     provider,
     [
-      { role: 'system', content: systemPrompt(options.targetLang) },
+      { role: 'system', content: systemPrompt(options, pinned) },
       { role: 'user', content: `待翻譯內容：\n"""\n${content}\n"""` },
     ],
     options,
@@ -93,6 +180,13 @@ export async function translateText(
   return cleanOutput(text);
 }
 
+/**
+ * The fallback for lorebook keys the glossary has no entry for.
+ *
+ * Prefer `translatedKeysFor`: a key translated independently of the entry's
+ * text may not match the term the reader actually types, and then the entry
+ * never fires. This exists for the terms that never made it into a glossary.
+ */
 export async function translateKeywords(
   provider: Provider,
   keywords: string[],
@@ -120,6 +214,238 @@ ${valid.join(', ')}`,
     .split(/[,、，]/)
     .map((k) => k.trim())
     .filter((k) => k !== '');
+}
+
+// ---------------------------------------------------------------------------
+// Glossary passes
+// ---------------------------------------------------------------------------
+
+/** About a page of text per request: enough context to judge, cheap enough to repeat. */
+const EXTRACT_BATCH_CHARS = 4000;
+const DECIDE_BATCH_TERMS = 40;
+/** Characters of surrounding text shown when asking for a translation. */
+const SNIPPET_WIDTH = 70;
+
+const EXTRACT_PROMPT = `你是一位協助翻譯的術語整理員。請從以下角色卡內容中，找出所有需要統一譯名的專有名詞。
+
+【算專有名詞】人名、地名、組織與勢力、稱謂與頭銜、專屬物品、專屬概念或設定用語。
+【不算】一般名詞與形容詞、日常詞彙、{{char}} 與 {{user}} 等巨集、<START> 等標記。
+
+【規則】
+1. s 必須逐字取自原文，不要翻譯，也不要更動大小寫。
+2. 同一個詞的其他寫法（縮寫、加冠詞、複數）放進 a，不要拆成多筆。
+3. 找不到任何專有名詞時回傳 {"terms":[]}。
+
+【輸出格式】只輸出 JSON，不要有任何說明文字：
+{"terms":[{"s":"原文詞","k":"person|place|org|item|title|concept|other","a":["其他寫法"]}]}`;
+
+const decidePrompt = (targetLang: string, settled: GlossaryTerm[]): string => {
+  const known =
+    settled.length === 0
+      ? ''
+      : `
+
+【已決定的譯名 — 必須沿用，不可更動，也不要重複輸出】
+${settled
+  .map((term) => (term.keepOriginal ? `${term.source} => 保留原文` : `${term.source} => ${term.target}`))
+  .join('\n')}`;
+
+  return `你是一位專業的角色設定翻譯，正在為一張角色卡決定專有名詞的統一譯名。目標語言是${targetLang}。
+
+【規則】
+1. 每個詞只給一個譯名，整張卡共用。
+2. 譯名要貼合角色卡的語境與文風，不要逐字硬譯。
+3. 人名等不適合意譯的詞可以維持原文，此時把 keep 設為 true，不要填 t。
+4. 只處理【待決定的詞】清單裡的詞，s 必須與清單中的原文完全一致。${known}
+
+【輸出格式】只輸出 JSON，不要有任何說明文字：
+{"terms":[{"s":"原文詞","t":"譯名"},{"s":"原文詞","keep":true}]}`;
+};
+
+interface RawTerm {
+  s?: unknown;
+  t?: unknown;
+  a?: unknown;
+  k?: unknown;
+  keep?: unknown;
+}
+
+const asText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+
+const asTextList = (value: unknown): string[] =>
+  Array.isArray(value) ? value.map(asText).filter((text) => text !== '') : [];
+
+const asKind = (value: unknown): TermKind =>
+  TERM_KINDS.includes(value as TermKind) ? (value as TermKind) : 'other';
+
+const fold = (text: string): string => text.toLowerCase();
+
+/** Group sections so each request carries roughly `limit` characters. */
+function batchSections(sections: CardSection[], limit: number): CardSection[][] {
+  const batches: CardSection[][] = [];
+  let current: CardSection[] = [];
+  let size = 0;
+
+  for (const section of sections) {
+    if (current.length > 0 && size + section.text.length > limit) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(section);
+    size += section.text.length;
+  }
+
+  // A single section over the limit gets a request to itself rather than being
+  // cut in half, which would slice terms apart at the seam.
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+/**
+ * Candidate proper nouns from the whole card.
+ *
+ * Runs before any translation, so the names are agreed once instead of being
+ * re-invented per field. Pair the result with `seedTerms`, which supplies the
+ * lorebook keys for free — this pass only has to find what those missed.
+ */
+export async function extractTerms(
+  provider: Provider,
+  fields: CardFields,
+  options: TranslateOptions & { onProgress?: ProgressFn },
+): Promise<GlossaryTerm[]> {
+  const batches = batchSections(cardSections(fields), EXTRACT_BATCH_CHARS);
+  const found = new Map<string, GlossaryTerm>();
+
+  // Sequential and fail-fast. This is two to six requests for a typical card,
+  // and a pooled run that swallowed one failed batch would hand back a glossary
+  // with holes in it — worse than an error somebody can retry.
+  for (const [index, batch] of batches.entries()) {
+    options.signal?.throwIfAborted();
+
+    const items = await chatJson<RawTerm>(
+      provider,
+      [
+        { role: 'system', content: EXTRACT_PROMPT },
+        {
+          role: 'user',
+          content: batch.map((section) => `## ${section.label}\n${section.text}`).join('\n\n'),
+        },
+      ],
+      options,
+      'terms',
+      '抽取專有名詞',
+    );
+
+    for (const item of items) {
+      const source = asText(item.s);
+      if (source === '' || found.has(fold(source))) continue;
+      found.set(fold(source), {
+        source,
+        target: '',
+        aliases: asTextList(item.a).filter((alias) => fold(alias) !== fold(source)),
+        kind: asKind(item.k),
+        origin: 'ai',
+        locked: false,
+        keepOriginal: false,
+      });
+    }
+
+    options.onProgress?.(index + 1, batches.length);
+  }
+
+  return [...found.values()];
+}
+
+/** The first place a term appears, with a little text either side of it. */
+function snippetFor(sections: CardSection[], source: string): string {
+  const needle = fold(source);
+
+  for (const section of sections) {
+    const at = fold(section.text).indexOf(needle);
+    if (at === -1) continue;
+    const start = Math.max(0, at - SNIPPET_WIDTH);
+    const end = Math.min(section.text.length, at + source.length + SNIPPET_WIDTH);
+    const body = section.text.slice(start, end).replace(/\s+/g, ' ').trim();
+    return `${start > 0 ? '…' : ''}${body}${end < section.text.length ? '…' : ''}`;
+  }
+
+  return '';
+}
+
+/**
+ * Settle on a translation for every term that does not have one.
+ *
+ * Terms somebody already decided are sent as a "must reuse" list rather than
+ * being re-asked, which is what keeps a second run from drifting away from the
+ * first. Locked terms are never touched. The result is a set of decisions for
+ * the caller to fold in with `mergeTerms`, so the precedence rules still apply.
+ */
+export async function decideTranslations(
+  provider: Provider,
+  fields: CardFields,
+  terms: GlossaryTerm[],
+  options: TranslateOptions & { onProgress?: ProgressFn },
+): Promise<GlossaryTerm[]> {
+  const pending = terms.filter((term) => !term.locked && !isDecided(term));
+  if (pending.length === 0) return [];
+
+  const sections = cardSections(fields);
+  const settled = terms.filter(isDecided);
+  const bySource = new Map(pending.map((term) => [fold(term.source), term]));
+
+  const batches: GlossaryTerm[][] = [];
+  for (let i = 0; i < pending.length; i += DECIDE_BATCH_TERMS) {
+    batches.push(pending.slice(i, i + DECIDE_BATCH_TERMS));
+  }
+
+  const decisions: GlossaryTerm[] = [];
+  const seen = new Set<string>();
+
+  for (const [index, batch] of batches.entries()) {
+    options.signal?.throwIfAborted();
+
+    const listing = batch
+      .map((term, i) => {
+        const snippet = snippetFor(sections, term.source);
+        return `${i + 1}. ${term.source}（${term.kind}）${snippet ? `｜出現於：${snippet}` : ''}`;
+      })
+      .join('\n');
+
+    const items = await chatJson<RawTerm>(
+      provider,
+      [
+        { role: 'system', content: decidePrompt(options.targetLang, settled) },
+        { role: 'user', content: `【待決定的詞】\n${listing}` },
+      ],
+      options,
+      'terms',
+      '決定譯名',
+    );
+
+    for (const item of items) {
+      const term = bySource.get(fold(asText(item.s)));
+      // Anything not on the list — a hallucinated term, or one already settled —
+      // is dropped rather than quietly added to the glossary.
+      if (!term || seen.has(fold(term.source))) continue;
+
+      const keepOriginal = item.keep === true;
+      const target = asText(item.t);
+      if (!keepOriginal && target === '') continue;
+
+      seen.add(fold(term.source));
+      decisions.push({
+        ...term,
+        target: keepOriginal ? '' : target,
+        keepOriginal,
+        origin: 'ai',
+      });
+    }
+
+    options.onProgress?.(index + 1, batches.length);
+  }
+
+  return decisions;
 }
 
 /**
