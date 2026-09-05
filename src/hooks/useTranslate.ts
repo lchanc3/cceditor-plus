@@ -6,6 +6,7 @@ import {
   decideTranslations,
   describeError,
   extractTerms,
+  translateCard,
   translateKeywords,
   translateText,
 } from '../ai';
@@ -19,9 +20,10 @@ export interface TaskProgress {
   total: number;
 }
 
-/** The two whole-card passes get fixed slots, since only one of each can run. */
+/** The whole-card passes get fixed slots, since only one of each can run. */
 export const EXTRACT_KEY = 'glossary:extract';
 export const DECIDE_KEY = 'glossary:decide';
+export const CARD_KEY = 'card';
 
 /**
  * Tracks one translation per UI slot (a field name, `greeting:2`, `lore:0`…),
@@ -137,6 +139,34 @@ export function useTranslate(settings: AISettings, meta: TranslationMeta) {
     [provider, run, settings.targetLang, step],
   );
 
+  /**
+   * Translate every section. Returns per-section results rather than throwing,
+   * so one blocked section cannot discard the rest.
+   */
+  const translateWholeCard = useCallback(
+    (fields: CardFields, only?: string[]) =>
+      run(CARD_KEY, (signal) =>
+        translateCard(provider, fields, {
+          targetLang: settings.targetLang,
+          temperature: settings.temperature,
+          glossary: meta.glossary,
+          styleNotes: meta.styleNotes,
+          signal,
+          only,
+          onProgress: step(CARD_KEY),
+        }),
+      ),
+    [
+      meta.glossary,
+      meta.styleNotes,
+      provider,
+      run,
+      settings.targetLang,
+      settings.temperature,
+      step,
+    ],
+  );
+
   const cancel = useCallback((key: string) => {
     controllers.current.get(key)?.abort();
     controllers.current.delete(key);
@@ -159,6 +189,7 @@ export function useTranslate(settings: AISettings, meta: TranslationMeta) {
     progress,
     translate,
     translateKeys,
+    translateWholeCard,
     extract,
     decide,
     cancel,

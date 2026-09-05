@@ -10,6 +10,12 @@ import {
   suggestFilename,
   withExportTimestamps,
 } from '../card';
+import {
+  clearTranslationMeta,
+  hasTranslationMeta,
+  readTranslationMeta,
+  writeTranslationMeta,
+} from '../glossary';
 import { downloadBytes, downloadText } from '../lib/download';
 import { Banner, Modal } from './ui';
 
@@ -34,10 +40,31 @@ export function ExportDialog({
   onClose: () => void;
 }) {
   const [spec, setSpec] = useState<ExportSpec>('max');
+  const [includeGlossary, setIncludeGlossary] = useState(true);
   const [error, setError] = useState('');
 
+  const glossaryOnCard = hasTranslationMeta(model.fields);
+
   // Timestamps are stamped once per export so both formats agree.
-  const stamped = useMemo(() => withExportTimestamps(model), [model]);
+  const stamped = useMemo(() => {
+    const base = withExportTimestamps(model);
+    if (!glossaryOnCard) return base;
+
+    const withExtensions = (extensions: Record<string, unknown>) => ({
+      ...base,
+      fields: { ...base.fields, extensions },
+    });
+
+    if (!includeGlossary) return withExtensions(clearTranslationMeta(base.fields));
+
+    const meta = readTranslationMeta(base.fields);
+    if (!meta) return base;
+    // Stamped here rather than in the reducer, alongside the card's own export
+    // timestamps, so editing stays deterministic.
+    return withExtensions(
+      writeTranslationMeta(base.fields, { ...meta, updatedAt: Math.floor(Date.now() / 1000) }),
+    );
+  }, [glossaryOnCard, includeGlossary, model]);
 
   const exportJson = () => {
     try {
@@ -90,6 +117,37 @@ export function ExportDialog({
           </label>
         ))}
       </fieldset>
+
+      {glossaryOnCard && (
+        <div className="space-y-2">
+          <label
+            className={`flex gap-3 rounded border border-line p-3 ${
+              spec === 'v1' ? 'opacity-60' : 'cursor-pointer'
+            }`}
+          >
+            <input
+              type="checkbox"
+              className="mt-1 size-4 shrink-0 accent-[#d4af37]"
+              checked={includeGlossary}
+              disabled={spec === 'v1'}
+              onChange={(event) => setIncludeGlossary(event.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-bold">將詞彙表寫入卡片</span>
+              <span className="mt-1 block text-xs leading-relaxed text-dim">
+                存放在 <code className="text-gold">data.extensions</code>，SillyTavern 不會把它送進對話，
+                只佔檔案大小（約每個詞 107 bytes）。下次用 CCEditor+ 開這張卡會自動還原譯名。
+              </span>
+            </span>
+          </label>
+
+          {spec === 'v1' && (
+            <Banner tone="warn">
+              V1 只有 6 個欄位、沒有 extensions，詞彙表無法隨這個 JSON 格式匯出。PNG 匯出不受影響。
+            </Banner>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <button onClick={exportJson} className="btn-ghost">

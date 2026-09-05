@@ -1,4 +1,4 @@
-import { Download, RotateCcw, Settings, Sparkles } from 'lucide-react';
+import { Download, Languages, Loader2, RotateCcw, Settings, Sparkles } from 'lucide-react';
 import { ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AISettings, loadSettings, saveSettings } from './ai';
@@ -10,12 +10,16 @@ import {
   suggestFilename,
 } from './card';
 import {
+  TranslationIssue,
+  cardSections,
+  checkTranslation,
   createTerm,
   decodeTranslationMeta,
   duplicateTargets,
   encodeTranslationMeta,
   scanUsage,
   termsInText,
+  translatedKeysFor,
   unappliedTerms,
 } from './glossary';
 import { AdvancedEditor } from './components/AdvancedEditor';
@@ -29,8 +33,9 @@ import { GreetingsEditor } from './components/GreetingsEditor';
 import { LorebookEditor } from './components/LorebookEditor';
 import { SettingsDialog } from './components/SettingsDialog';
 import { TabBar, TabDef } from './components/TabBar';
+import { RunReport, TranslateReport } from './components/TranslateReport';
 import { Banner } from './components/ui';
-import { useTranslate } from './hooks/useTranslate';
+import { CARD_KEY, useTranslate } from './hooks/useTranslate';
 import { clearDraft, loadDraft, saveDraft } from './lib/draft';
 import { downloadText } from './lib/download';
 import { useCardStore } from './state/cardStore';
@@ -73,6 +78,8 @@ export default function App() {
    * be worked out at the moment a translation lands, never afterwards.
    */
   const [unapplied, setUnapplied] = useState<Set<string>>(new Set());
+  /** The outcome of the last translation run, until it is dismissed. */
+  const [report, setReport] = useState<RunReport | null>(null);
 
   const translate = useTranslate(settings, state.glossary);
   const { model, imageBytes } = state;
@@ -108,6 +115,7 @@ export default function App() {
         actions.load(result.model, result.origin, result.warnings, result.imageBytes);
         setActiveTab('basic');
         setUnapplied(new Set());
+        setReport(null);
         setDraftOffer(null);
       } catch (error) {
         setLoadError((error as Error).message || '無法讀取這個檔案。');
@@ -138,6 +146,7 @@ export default function App() {
     void clearDraft();
     translate.cancelAll();
     setUnapplied(new Set());
+    setReport(null);
     reset();
   }, [reset, state.dirty, translate]);
 
@@ -208,8 +217,15 @@ export default function App() {
 
       // Keywords are appended, never replaced: the original terms still have to
       // match the text that triggers the entry.
+      //
+      // With a glossary, the translated key comes from the same place as the
+      // name used in the text above — which is the only thing that guarantees
+      // the entry still fires. Only a card with no glossary at all falls back
+      // to translating the keys independently.
+      const terms = state.glossary.glossary;
       const appendTranslated = async (existing: string[]): Promise<string[]> => {
         if (existing.length === 0) return existing;
+        if (terms.length > 0) return [...existing, ...translatedKeysFor(existing, terms)];
         const translated = await translate.translateKeys(key, existing);
         if (!translated) return existing;
         return [...existing, ...translated.filter((word) => !existing.includes(word))];
@@ -229,7 +245,62 @@ export default function App() {
       });
       checkApplied(entry.content, content);
     },
-    [checkApplied, dispatch, model, translate],
+    [checkApplied, dispatch, model, state.glossary.glossary, translate],
+  );
+
+  /** Run the deterministic checks and keep whatever they found for this path. */
+  const inspect = useCallback(
+    (source: string, translated: string): TranslationIssue[] =>
+      checkTranslation(source, translated, { targetLang: settings.targetLang }),
+    [settings.targetLang],
+  );
+
+  const translateWholeCard = useCallback(
+    async (only?: string[]) => {
+      if (!model) return;
+
+      // Captured before anything is written, since translating in place
+      // destroys the source the checks need.
+      const before = new Map(cardSections(model.fields).map((s) => [s.path, s.text]));
+      const entries = model.fields.character_book?.entries ?? [];
+      const terms = state.glossary.glossary;
+
+      const results = await translate.translateWholeCard(model.fields, only);
+      if (!results) return;
+
+      const issues: Record<string, TranslationIssue[]> = {};
+
+      for (const result of results) {
+        if (result.text === undefined) continue;
+        const source = before.get(result.path) ?? '';
+
+        dispatch({ type: 'section.set', path: result.path, value: result.text });
+
+        // A lorebook entry only fires if its keys match the translated text, so
+        // the keys come from the same glossary the translation was pinned to.
+        const lore = /^lore:(\d+)$/.exec(result.path);
+        if (lore && terms.length > 0) {
+          const index = Number(lore[1]);
+          const entry = entries[index];
+          if (entry) {
+            const keys = translatedKeysFor(entry.keys, terms);
+            if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
+
+            const secondary = translatedKeysFor(entry.secondary_keys ?? [], terms);
+            if (secondary.length > 0) {
+              dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
+            }
+          }
+        }
+
+        const found = inspect(source, result.text);
+        if (found.length > 0) issues[result.path] = found;
+        checkApplied(source, result.text);
+      }
+
+      setReport({ results, issues });
+    },
+    [checkApplied, dispatch, inspect, model, state.glossary.glossary, translate],
   );
 
   // ---- glossary ----------------------------------------------------------
@@ -343,6 +414,29 @@ export default function App() {
             >
               <Settings className="size-5" />
             </button>
+            {model &&
+              (translate.status[CARD_KEY] === 'running' ? (
+                <button
+                  onClick={() => translate.cancel(CARD_KEY)}
+                  className="btn-ghost hidden px-3 text-gold sm:inline-flex"
+                >
+                  <Loader2 className="size-4 animate-spin" />
+                  取消
+                  {translate.progress[CARD_KEY] && (
+                    <span className="tabular-nums">
+                      {translate.progress[CARD_KEY].done}/{translate.progress[CARD_KEY].total}
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <button
+                  onClick={() => void translateWholeCard()}
+                  className="btn-ghost hidden px-3 sm:inline-flex"
+                >
+                  <Languages className="size-4" />
+                  整卡翻譯
+                </button>
+              ))}
             {model && (
               <button onClick={() => setExportOpen(true)} className="btn-primary hidden px-4 sm:inline-flex">
                 <Download className="size-4" />
@@ -392,6 +486,17 @@ export default function App() {
                 </div>
               </div>
             </Banner>
+          </div>
+        )}
+
+        {model && report && (
+          <div className="mb-5">
+            <TranslateReport
+              report={report}
+              onRetry={(paths) => void translateWholeCard(paths)}
+              onDismiss={() => setReport(null)}
+              onJump={jumpToPath}
+            />
           </div>
         )}
 
