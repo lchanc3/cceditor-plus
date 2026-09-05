@@ -113,6 +113,22 @@ export function createTranslationMeta(partial: Partial<TranslationMeta> = {}): T
 }
 
 /**
+ * A term with the defaults filled in. `manual` because this is the path a
+ * person adding a term by hand goes through; the AI passes build their own.
+ */
+export function createTerm(partial: Partial<GlossaryTerm> & { source: string }): GlossaryTerm {
+  return {
+    target: '',
+    aliases: [],
+    kind: 'other',
+    origin: 'manual',
+    locked: false,
+    keepOriginal: false,
+    ...partial,
+  };
+}
+
+/**
  * A block with no terms and no style notes says nothing, so it is not written at
  * all — the same reasoning that makes `serializeCard` drop an empty lorebook.
  */

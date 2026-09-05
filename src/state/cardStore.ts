@@ -9,6 +9,15 @@ import {
   createEmptyCard,
   createEmptyLorebookEntry,
 } from '../card';
+import {
+  GlossaryTerm,
+  TranslationMeta,
+  createTranslationMeta,
+  mergeTerms,
+  readTranslationMeta,
+  seedTerms,
+  writeTranslationMeta,
+} from '../glossary';
 
 export interface CardState {
   model: CardModel | null;
@@ -17,6 +26,15 @@ export interface CardState {
   origin: CardOrigin | null;
   warnings: string[];
   dirty: boolean;
+  /**
+   * The working copy of what is also written into `model.fields.extensions`.
+   *
+   * Both are kept in step by `withGlossary`, which is the only thing that
+   * changes either. The card stays the single source of truth — so the draft
+   * and every export carry the glossary without any extra plumbing — while this
+   * saves the viewer from reparsing the extensions object on every render.
+   */
+  glossary: TranslationMeta;
 }
 
 export type KeyField = 'keys' | 'secondary_keys';
@@ -33,8 +51,19 @@ export type CardAction =
   | { type: 'lore.remove'; index: number }
   | { type: 'lore.patch'; index: number; patch: Partial<LorebookEntry> }
   | { type: 'lore.addKeys'; index: number; field: KeyField; raw: string }
+  /** Appends already-split keys — translated terms may contain a comma. */
+  | { type: 'lore.addKeyList'; index: number; field: KeyField; keys: string[] }
   | { type: 'lore.removeKey'; index: number; field: KeyField; keyIndex: number }
   | { type: 'lore.patchBook'; patch: Partial<Lorebook> }
+  | { type: 'glossary.set'; meta: TranslationMeta }
+  | { type: 'glossary.merge'; terms: GlossaryTerm[] }
+  | { type: 'glossary.seed' }
+  | { type: 'glossary.addTerm'; term: GlossaryTerm }
+  | { type: 'glossary.patchTerm'; index: number; patch: Partial<GlossaryTerm> }
+  | { type: 'glossary.removeTerm'; index: number }
+  | { type: 'glossary.setStyleNotes'; notes: string }
+  | { type: 'glossary.setLangs'; sourceLang?: string; targetLang?: string }
+  | { type: 'glossary.clear' }
   | { type: 'replaceImage'; bytes: Uint8Array }
   | { type: 'dismissWarnings' }
   | { type: 'reset' };
@@ -45,6 +74,7 @@ export const initialCardState: CardState = {
   origin: null,
   warnings: [],
   dirty: false,
+  glossary: createTranslationMeta(),
 };
 
 /** Splitting on both ASCII and full-width separators; card authors use either. */
@@ -74,6 +104,36 @@ function withEntries(state: CardState, update: (entries: LorebookEntry[]) => Lor
   return withFields(state, { character_book: { ...book, entries: update(book.entries) } });
 }
 
+/** Append keys the entry does not already carry. */
+function appendKeys(entry: LorebookEntry, field: KeyField, keys: string[]): LorebookEntry {
+  const current = entry[field] ?? [];
+  const added = keys
+    .map((key) => key.trim())
+    .filter((key) => key !== '' && !current.includes(key));
+  return added.length === 0 ? entry : { ...entry, [field]: [...current, ...added] };
+}
+
+/**
+ * The one place the glossary changes, so the working copy and the copy on the
+ * card cannot drift apart.
+ */
+function withGlossary(state: CardState, meta: TranslationMeta): CardState {
+  if (!state.model) return state;
+  return {
+    ...withFields(state, { extensions: writeTranslationMeta(state.model.fields, meta) }),
+    glossary: meta,
+  };
+}
+
+/** Change the term list, leaving the rest of the metadata alone. */
+function withTerms(state: CardState, update: (terms: GlossaryTerm[]) => GlossaryTerm[]): CardState {
+  return withGlossary(state, { ...state.glossary, glossary: update(state.glossary.glossary) });
+}
+
+/** What the card already carries, or an empty glossary if it carries nothing. */
+const hydrate = (model: CardModel): TranslationMeta =>
+  readTranslationMeta(model.fields) ?? createTranslationMeta();
+
 export function cardReducer(state: CardState, action: CardAction): CardState {
   switch (action.type) {
     case 'load':
@@ -83,6 +143,9 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         origin: action.origin,
         warnings: action.warnings,
         dirty: false,
+        // Reading the glossary back off the card is what stops the names
+        // drifting between one editing session and the next.
+        glossary: hydrate(action.model),
       };
 
     case 'restore':
@@ -92,6 +155,7 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         origin: null,
         warnings: [],
         dirty: true,
+        glossary: hydrate(action.model),
       };
 
     case 'setField':
@@ -138,13 +202,16 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
 
     case 'lore.addKeys':
       return withEntries(state, (entries) =>
-        entries.map((entry, i) => {
-          if (i !== action.index) return entry;
-          const current = entry[action.field] ?? [];
-          const added = splitKeys(action.raw).filter((key) => !current.includes(key));
-          if (added.length === 0) return entry;
-          return { ...entry, [action.field]: [...current, ...added] };
-        }),
+        entries.map((entry, i) =>
+          i === action.index ? appendKeys(entry, action.field, splitKeys(action.raw)) : entry,
+        ),
+      );
+
+    case 'lore.addKeyList':
+      return withEntries(state, (entries) =>
+        entries.map((entry, i) =>
+          i === action.index ? appendKeys(entry, action.field, action.keys) : entry,
+        ),
       );
 
     case 'lore.removeKey':
@@ -161,6 +228,55 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
       const book = state.model.fields.character_book ?? emptyBook();
       return withFields(state, { character_book: { ...book, ...action.patch } });
     }
+
+    case 'glossary.set':
+      return withGlossary(state, action.meta);
+
+    case 'glossary.merge':
+      // `mergeTerms` decides what wins, so an AI pass fills blanks without
+      // overwriting anything a person settled.
+      return withTerms(state, (terms) => mergeTerms(terms, action.terms));
+
+    case 'glossary.seed': {
+      const { model } = state;
+      if (!model) return state;
+      return withTerms(state, (terms) => mergeTerms(terms, seedTerms(model.fields)));
+    }
+
+    case 'glossary.addTerm':
+      return withTerms(state, (terms) => [...terms, action.term]);
+
+    case 'glossary.patchTerm':
+      return withTerms(state, (terms) =>
+        terms.map((term, i) => {
+          if (i !== action.index) return term;
+          const patched = { ...term, ...action.patch };
+          // This action is the UI's, so a changed translation is a person's
+          // decision and has to outrank the next AI pass. Setting it here means
+          // no call site can forget.
+          const decided =
+            action.patch.target !== undefined || action.patch.keepOriginal !== undefined;
+          return decided && action.patch.origin === undefined
+            ? { ...patched, origin: 'manual' as const }
+            : patched;
+        }),
+      );
+
+    case 'glossary.removeTerm':
+      return withTerms(state, (terms) => terms.filter((_, i) => i !== action.index));
+
+    case 'glossary.setStyleNotes':
+      return withGlossary(state, { ...state.glossary, styleNotes: action.notes });
+
+    case 'glossary.setLangs':
+      return withGlossary(state, {
+        ...state.glossary,
+        ...(action.sourceLang !== undefined ? { sourceLang: action.sourceLang } : {}),
+        ...(action.targetLang !== undefined ? { targetLang: action.targetLang } : {}),
+      });
+
+    case 'glossary.clear':
+      return withGlossary(state, createTranslationMeta());
 
     case 'replaceImage':
       // Only the artwork changes. The previous build routed this through the
