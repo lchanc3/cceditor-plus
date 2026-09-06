@@ -11,6 +11,7 @@
  */
 
 import type { CardFields } from '../card';
+import { simplifiedTable, wantsTraditional } from './checks';
 import type { GlossaryTerm, TermOrigin } from './storage';
 
 export interface CardSection {
@@ -367,6 +368,48 @@ export function mergeTerms(base: GlossaryTerm[], incoming: GlossaryTerm[]): Glos
 // ---------------------------------------------------------------------------
 // Checks
 // ---------------------------------------------------------------------------
+
+export interface ScriptSlip {
+  source: string;
+  target: string;
+  /** Each offending character, with the form it should have been. */
+  found: { had: string; wanted: string }[];
+}
+
+/**
+ * Translations somebody typed a simplified character into.
+ *
+ * `checkTranslation` has always inspected the model's prose, but a translation
+ * decided here was never inspected at all — and this is the more damaging place
+ * for a wrong character to land. A term is pinned into every prompt that touches
+ * it and appended to the lorebook keys, so one simplified character in a 譯名 is
+ * reproduced everywhere the term occurs; the check downstream then blames the
+ * model for it, in every section, every run.
+ *
+ * The table is the one `checkTranslation` already uses, exceptions and all, so
+ * this adds no new false alarms — only a new place to look for the ones that
+ * table already catches. A term kept in the source language is skipped, since
+ * whatever it is written in, it is not a translation.
+ */
+export function simplifiedTargets(terms: GlossaryTerm[], targetLang: string): ScriptSlip[] {
+  if (!wantsTraditional(targetLang)) return [];
+
+  const table = simplifiedTable();
+  const slips: ScriptSlip[] = [];
+
+  for (const term of terms) {
+    const target = term.target.trim();
+    if (target === '' || term.keepOriginal) continue;
+
+    const found = [...new Set([...target])]
+      .filter((char) => table.has(char))
+      .map((had) => ({ had, wanted: table.get(had)! }));
+
+    if (found.length > 0) slips.push({ source: term.source, target, found });
+  }
+
+  return slips;
+}
 
 /**
  * Terms that were given the same translation. Not always an error — two names

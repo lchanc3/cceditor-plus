@@ -150,7 +150,12 @@ const PAIRS =
   '胀脹脑腦脓膿脸臉腊臘腻膩舰艦艰艱艳艷节節芦蘆苏蘇苹蘋茎莖荐薦荡蕩药藥莱萊萝蘿蒋蔣蓝藍蔷薔' +
   '虏虜虑慮虾蝦蚀蝕蜡蠟蝇蠅蝉蟬补補袄襖装裝赶趕趋趨跃躍践踐踌躊蹑躡辞辭边邊达達迁遷运運连連' +
   '迟遲适適选選逊遜递遞逻邏遗遺邓鄧邮郵郑鄭邻鄰酝醞释釋队隊阶階阳陽阴陰陆陸险險隐隱难難雏雛' +
-  '杂雜电電霉黴静靜卤滷麦麥齿齒龄齡龈齦龟龜别別却卻处處尔爾万萬汇匯尽盡历歷钟鐘须鬚';
+  '杂雜电電霉黴静靜卤滷麦麥齿齒龄齡龈齦龟龜别別却卻处處尔爾万萬汇匯尽盡历歷钟鐘须鬚' +
+  // Added from a real card's own vocabulary, where the gaps showed. Twenty of
+  // its glossary terms contain 聖 and its lead is called 凱齊亞, yet neither 圣
+  // nor 凯 was here. The 兌 family came from 蛻變 typed as 蜕變, which nothing
+  // caught — in a 譯名, where it would have been pinned into every prompt.
+  '圣聖华華兽獸剑劍丽麗凤鳳凯凱髅髏触觸渊淵洁潔虚虛禅禪坛壇庙廟兑兌悦悅脱脫蜕蛻';
 
 /** Built once: every simplified character mapped to what it should have been. */
 const TRADITIONAL_FOR = (() => {
@@ -199,7 +204,7 @@ function excerptAround(text: string, index: number, width = 20): string {
 }
 
 /** Traditional Chinese under any of the names the settings offer. */
-const wantsTraditional = (targetLang: string): boolean => /繁體|繁体|zh-?(?:tw|hant|hk)/i.test(targetLang);
+export const wantsTraditional = (targetLang: string): boolean => /繁體|繁体|zh-?(?:tw|hant|hk)/i.test(targetLang);
 
 export function checkTranslation(
   source: string,

@@ -23,6 +23,7 @@ import {
   mergeTerms,
   parseSectionPath,
   scanUsage,
+  simplifiedTargets,
   sectionGroup,
   seedTerms,
   termsInText,
@@ -430,6 +431,47 @@ describe('duplicateTargets', () => {
         term({ source: 'D', target: 'x', keepOriginal: true }),
       ]),
     ).toEqual([]);
+  });
+});
+
+describe('simplifiedTargets', () => {
+  const zhTW = '繁體中文';
+
+  it('catches a simplified character somebody typed into a 譯名', () => {
+    // The real slip: 蛻變 typed as 蜕變 is caught by the script check on the
+    // model's prose but never on the glossary, where it does the most damage.
+    const found = simplifiedTargets([term({ source: 'order', target: '圣团' })], zhTW);
+    expect(found).toEqual([
+      {
+        source: 'order',
+        target: '圣团',
+        found: [
+          { had: '圣', wanted: '聖' },
+          { had: '团', wanted: '團' },
+        ],
+      },
+    ]);
+  });
+
+  it('leaves clean translations, blanks and kept-original terms alone', () => {
+    expect(
+      simplifiedTargets(
+        [
+          term({ source: 'order', target: '聖團' }),
+          term({ source: 'keziah' }),
+          term({ source: 'Baal', target: '巴力', keepOriginal: true }),
+        ],
+        zhTW,
+      ),
+    ).toEqual([]);
+  });
+
+  it('inherits the exceptions list, so 皇后 is not an error', () => {
+    expect(simplifiedTargets([term({ source: 'empress', target: '皇后' })], zhTW)).toEqual([]);
+  });
+
+  it('says nothing when the target language is not traditional', () => {
+    expect(simplifiedTargets([term({ source: 'order', target: '圣团' })], '简体中文')).toEqual([]);
   });
 });
 

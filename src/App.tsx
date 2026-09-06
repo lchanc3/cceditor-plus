@@ -19,6 +19,7 @@ import {
   encodeTranslationMeta,
   glossaryReadiness,
   scanUsage,
+  simplifiedTargets,
   termsInText,
   translatedKeysFor,
   unappliedTerms,
@@ -363,6 +364,10 @@ export default function App() {
     [model, glossary],
   );
   const conflicts = useMemo(() => duplicateTargets(glossary), [glossary]);
+  const scriptSlips = useMemo(
+    () => simplifiedTargets(glossary, settings.targetLang),
+    [glossary, settings.targetLang],
+  );
   const sections = useMemo(() => (model ? cardSections(model.fields) : []), [model]);
   const readiness = useMemo(
     () => (model ? glossaryReadiness(model.fields, glossary) : NO_GLOSSARY),
@@ -659,6 +664,7 @@ export default function App() {
                     meta: state.glossary,
                     usage,
                     conflicts,
+                    scriptSlips,
                     unapplied,
                     onSeed: () => dispatch({ type: 'glossary.seed' }),
                     onExtract: runExtract,

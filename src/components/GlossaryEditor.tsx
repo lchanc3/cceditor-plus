@@ -1,7 +1,7 @@
 import { ChevronDown, Download, KeyRound, Lock, Plus, Trash2, Unlock, Upload } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 
-import type { GlossaryTerm, TermKind, TermUsage, TranslationMeta } from '../glossary';
+import type { GlossaryTerm, ScriptSlip, TermKind, TermUsage, TranslationMeta } from '../glossary';
 import { DECIDE_KEY, EXTRACT_KEY, TaskProgress, TaskStatus } from '../hooks/useTranslate';
 import { cn } from '../lib/utils';
 import { Banner, EmptyHint, TranslateButton } from './ui';
@@ -29,6 +29,7 @@ export function GlossaryEditor({
   meta,
   usage,
   conflicts,
+  scriptSlips,
   unapplied,
   status,
   errors,
@@ -51,6 +52,8 @@ export function GlossaryEditor({
   meta: TranslationMeta;
   usage: TermUsage[];
   conflicts: { target: string; sources: string[] }[];
+  /** Decided translations that contain a simplified character. */
+  scriptSlips: ScriptSlip[];
   /** Terms a finished translation did not honour, by term source. */
   unapplied: Set<string>;
   status: Record<string, TaskStatus>;
@@ -162,6 +165,26 @@ export function GlossaryEditor({
             {conflicts.map((conflict) => (
               <p key={conflict.target}>
                 <span className="text-gold">{conflict.target}</span> ← {conflict.sources.join('、')}
+              </p>
+            ))}
+          </div>
+        </Banner>
+      )}
+
+      {scriptSlips.length > 0 && (
+        <Banner tone="warn">
+          <div className="space-y-1">
+            <p>
+              以下譯名裡有簡體字。譯名會被釘進每一次翻譯，也會成為世界書關鍵字，所以錯字會跟著擴散出去：
+            </p>
+            {scriptSlips.map((slip) => (
+              <p key={slip.source}>
+                <span className="text-dim">{slip.source} → </span>
+                <span className="text-gold">{slip.target}</span>
+                <span className="text-dim">
+                  {' '}
+                  （{slip.found.map((bad) => `${bad.had} 應為 ${bad.wanted}`).join('、')}）
+                </span>
               </p>
             ))}
           </div>
