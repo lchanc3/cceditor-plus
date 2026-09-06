@@ -13,6 +13,7 @@ const ISSUE_LABELS: Record<TranslationIssue['kind'], string> = {
   macro: '巨集',
   structure: '結構',
   script: '字體',
+  encoding: '編碼',
   note: '夾註',
 };
 

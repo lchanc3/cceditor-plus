@@ -44,6 +44,22 @@ describe('what a real translated card actually contained', () => {
     expect(issue?.message).toContain('多加了');
   });
 
+  it('catches the characters the model destroyed on a real 55,000-character card', () => {
+    // Two of the forty-nine that one run produced: the 凱 of 凱齊亞 and the 神 of
+    // 神殿, in a lorebook entry every other check passed.
+    const source = "The host's body becomes a living temple to Keziah.";
+    const translated = '宿主的身體成為供奉�齊亞的活體�殿。';
+
+    const issue = checkTranslation(source, translated, zhTW).find((i) => i.kind === 'encoding');
+    expect(issue?.message).toContain('2 個');
+    expect(issue?.excerpt).toContain('齊亞');
+  });
+
+  it('does not blame the translation for damage the source arrived with', () => {
+    const damaged = 'A living temple to Kezi�h.';
+    expect(kinds(damaged, '獻給凱齊�的活體神殿。')).not.toContain('encoding');
+  });
+
   it('passes the parts of that card that were fine', () => {
     // Macros and paragraph structure held throughout mes_example.
     const source = '{{user}}: You are a genius.\n{{char}}: *She wipes a tear.*\n— Really?';

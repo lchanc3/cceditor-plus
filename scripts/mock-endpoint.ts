@@ -16,7 +16,7 @@
  *   RATEME     429 with Retry-After: 5         (throttling, then success)
  *   BOOMME     500                             (a transient server error)
  *   DEADME     401                             (fatal — should stop the run)
- *   SLOWME     a 20s reply                     (for testing cancellation)
+ *   SLOWME     a 20s reply                     (for testing cancellation) *   MOJIME     a reply peppered with U+FFFD     (characters the model destroyed)
  *
  * Anything else comes back as a fake translation, so a card with one FILTERME
  * lore entry produces exactly the partial-success case worth looking at.
@@ -127,6 +127,21 @@ const server = createServer(async (req, res) => {
     send(res, 200, {
       choices: [{ message: { content: '' }, finish_reason: 'content_filter' }],
     });
+    return;
+  }
+
+  if (content.includes('MOJIME')) {
+    console.log(`mojibake  ${label}`);
+    // A reply that is otherwise perfectly good, with the occasional character
+    // replaced by U+FFFD. This is not hypothetical: one 55,000-character card
+    // came back from a live endpoint carrying forty-nine of them, and every
+    // check in `checks.ts` passed all thirty-six of its sections. The encoding
+    // check exists because of that run, and this marker is how it gets
+    // exercised without waiting for a model to corrupt something again.
+    const text = [...fakeTranslation(content)]
+      .map((ch, i) => (i > 0 && i % 40 === 0 && ch.trim() !== '' ? '�' : ch))
+      .join('');
+    send(res, 200, { choices: [{ message: { content: text }, finish_reason: 'stop' }] });
     return;
   }
 

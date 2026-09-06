@@ -14,7 +14,7 @@
  * heuristic is how a translation acquires a broken sentence.
  */
 
-export type IssueKind = 'macro' | 'structure' | 'script' | 'note';
+export type IssueKind = 'macro' | 'structure' | 'script' | 'encoding' | 'note';
 
 export interface TranslationIssue {
   kind: IssueKind;
@@ -28,6 +28,9 @@ export interface TranslationIssue {
  * through unchanged and in the same number.
  */
 const MACRO = /\{\{[^{}\n]{1,40}\}\}|<START>/gi;
+
+/** What a decoder leaves behind when the bytes for a character never arrived. */
+const REPLACEMENT = '\uFFFD';
 
 /**
  * Simplified characters and the traditional form each one should have been.
@@ -251,6 +254,33 @@ export function checkTranslation(
         excerpt: excerptAround(translated, translated.indexOf(found[0])),
       });
     }
+  }
+
+  // --- encoding -------------------------------------------------------------
+  //
+  // The cheapest check in this file and the one that has caught the most. A
+  // single card came back carrying forty-nine replacement characters — one per
+  // 370 — spread through the greetings, the lorebook and the description, while
+  // every other check passed all thirty-six of its sections.
+  //
+  // Nothing here produced them: `http.ts` reads a response with one
+  // `response.text()`, so there is no chunk boundary for a multi-byte character
+  // to be split on. They arrive from the model, or from whatever sits between.
+  //
+  // Unlike the script check there is nothing to weigh, which is why this one has
+  // no exceptions list: U+FFFD is never a character anybody meant to write, so a
+  // hit is never a false alarm. What it replaced can only be recovered from the
+  // source, which is why this reports rather than repairs — and why the source's
+  // own are subtracted, so a card that arrived damaged is not blamed on the
+  // translation.
+  const lostBefore = countOf(source, REPLACEMENT);
+  const lostAfter = countOf(translated, REPLACEMENT);
+  if (lostAfter > lostBefore) {
+    issues.push({
+      kind: 'encoding',
+      message: `譯文裡有 ${lostAfter - lostBefore} 個無法辨識的字元（U+FFFD），模型或端點把字吐壞了。原字已經不在譯文裡，要對照原文才補得回來。`,
+      excerpt: excerptAround(translated, translated.indexOf(REPLACEMENT)),
+    });
   }
 
   // --- translator's notes ---------------------------------------------------

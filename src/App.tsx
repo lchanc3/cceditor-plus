@@ -197,6 +197,47 @@ export default function App() {
     [state.glossary.glossary],
   );
 
+  /** Run the deterministic checks and keep whatever they found for this path. */
+  const inspect = useCallback(
+    (source: string, translated: string): TranslationIssue[] =>
+      checkTranslation(source, translated, { targetLang: settings.targetLang }),
+    [settings.targetLang],
+  );
+
+  /**
+   * What happens once a single section has been translated on its own.
+   *
+   * The whole-card run has always inspected what came back; the per-field
+   * buttons only ever checked the glossary, so a section retranslated by itself
+   * was accepted without anyone looking at its macros, its line structure, its
+   * script or its encoding. That is the path somebody takes to fix a section
+   * they were unhappy with, which makes it the worst one to leave unwatched — a
+   * card can reach export having been repaired a field at a time and never
+   * checked once.
+   *
+   * The report opens only when something was found. One that appeared after
+   * every clean field would be dismissed unread within a day, and the button
+   * already shows a tick of its own when a translation lands without complaint.
+   */
+  const settle = useCallback(
+    (path: string, source: string, translated: string) => {
+      checkApplied(source, translated);
+
+      const found = inspect(source, translated);
+      if (found.length === 0) return;
+
+      // The label comes from the card as it was before the translation, which
+      // is still what `model` holds here — the dispatch above does not reach
+      // this closure until the next render.
+      const label = model
+        ? (cardSections(model.fields).find((section) => section.path === path)?.label ?? path)
+        : path;
+
+      setReport({ results: [{ path, label, text: translated }], issues: { [path]: found } });
+    },
+    [checkApplied, inspect, model],
+  );
+
   const translateField = useCallback(
     async (key: keyof CardFields) => {
       if (!model) return;
@@ -205,9 +246,9 @@ export default function App() {
       const result = await translate.translate(key as string, current);
       if (result === null) return;
       setField(key, result as CardFields[typeof key]);
-      checkApplied(current, result);
+      settle(key as string, current, result);
     },
-    [checkApplied, model, setField, translate],
+    [model, setField, settle, translate],
   );
 
   const translateGreeting = useCallback(
@@ -217,9 +258,9 @@ export default function App() {
       const result = await translate.translate(`greeting:${index}`, source);
       if (result === null) return;
       dispatch({ type: 'greeting.set', index, value: result });
-      checkApplied(source, result);
+      settle(`greeting:${index}`, source, result);
     },
-    [checkApplied, dispatch, model, translate],
+    [dispatch, model, settle, translate],
   );
 
   const translateLoreEntry = useCallback(
@@ -259,16 +300,9 @@ export default function App() {
           ...(secondary.length > 0 ? { secondary_keys: secondary } : {}),
         },
       });
-      checkApplied(entry.content, content);
+      settle(key, entry.content, content);
     },
-    [checkApplied, dispatch, model, state.glossary.glossary, translate],
-  );
-
-  /** Run the deterministic checks and keep whatever they found for this path. */
-  const inspect = useCallback(
-    (source: string, translated: string): TranslationIssue[] =>
-      checkTranslation(source, translated, { targetLang: settings.targetLang }),
-    [settings.targetLang],
+    [dispatch, model, settle, state.glossary.glossary, translate],
   );
 
   const translateWholeCard = useCallback(
