@@ -1,5 +1,5 @@
 import { ChevronDown, Download, KeyRound, Lock, Plus, Trash2, Unlock, Upload } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { GlossaryTerm, ScriptSlip, TermKind, TermUsage, TranslationMeta } from '../glossary';
 import { DECIDE_KEY, EXTRACT_KEY, TaskProgress, TaskStatus } from '../hooks/useTranslate';
@@ -103,6 +103,62 @@ export function GlossaryEditor({
         );
       });
   }, [usage, query, pendingOnly]);
+  const slipped = useMemo(() => new Set(scriptSlips.map((slip) => slip.source)), [scriptSlips]);
+
+  /**
+   * How badly a term wants looking at. 0 is undecided — it contributes nothing
+   * to a translation until somebody settles it. 1 is decided but questioned by
+   * one of the checks. 2 is everything else.
+   */
+  const attentionOf = useCallback(
+    (term: GlossaryTerm): 0 | 1 | 2 => {
+      if (!term.keepOriginal && term.target.trim() === '') return 0;
+      if (slipped.has(term.source) || unapplied.has(term.source)) return 1;
+      return 2;
+    },
+    [slipped, unapplied],
+  );
+
+  /**
+   * The order rows are shown in — a snapshot, not a live sort.
+   *
+   * Sorting live would move a row out from under the cursor the instant a
+   * translation was typed into it, which is the one thing a list edited in
+   * place must never do. So the order is recomputed only while nothing inside
+   * the list holds focus: on load, after a seed or an AI pass, and as soon as
+   * the field being edited is left.
+   *
+   * Within the groups that need attention the tie-break is how often the term
+   * occurs. A blank with fifty-seven occurrences is a different problem from a
+   * blank with none, and a list that presents them as equals has not helped.
+   * Terms with nothing wrong keep the order they were seeded in, since that
+   * follows the lorebook and is easier to scan than any ranking.
+   */
+  const [editing, setEditing] = useState(false);
+  const [order, setOrder] = useState<number[]>([]);
+
+  const ranked = useMemo(
+    () =>
+      [...rows]
+        .sort((a, b) => {
+          const rank = attentionOf(a.term);
+          const byAttention = rank - attentionOf(b.term);
+          if (byAttention !== 0) return byAttention;
+          return rank === 2 ? a.index - b.index : b.total - a.total;
+        })
+        .map((row) => row.index),
+    [rows, attentionOf],
+  );
+
+  useEffect(() => {
+    if (!editing) setOrder(ranked);
+  }, [editing, ranked]);
+
+  const shown = useMemo(() => {
+    const at = new Map(order.map((index, position) => [index, position]));
+    return [...rows].sort((a, b) => (at.get(a.index) ?? Infinity) - (at.get(b.index) ?? Infinity));
+  }, [rows, order]);
+
 
   const commitDraft = () => {
     if (draft.trim()) onAdd(draft.trim());
@@ -235,14 +291,22 @@ export function GlossaryEditor({
           {rows.length === 0 ? (
             <EmptyHint>沒有符合條件的詞彙。</EmptyHint>
           ) : (
-            <ul className="space-y-2">
-              {rows.map(({ term, hits, total, index }) => (
+            <ul
+              className="space-y-2"
+              onFocusCapture={() => setEditing(true)}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) setEditing(false);
+              }}
+            >
+              {shown.map(({ term, hits, total, index }) => (
                 <TermRow
                   key={`${term.source}-${index}`}
                   term={term}
                   hits={hits}
                   total={total}
                   unapplied={unapplied.has(term.source)}
+                  slipped={slipped.has(term.source)}
+                  attention={attentionOf(term)}
                   onPatch={(patch) => onPatch(index, patch)}
                   onRemove={() => onRemove(index)}
                   onJump={onJump}
@@ -314,6 +378,8 @@ function TermRow({
   hits,
   total,
   unapplied,
+  slipped,
+  attention,
   onPatch,
   onRemove,
   onJump,
@@ -322,6 +388,10 @@ function TermRow({
   hits: { path: string; count: number }[];
   total: number;
   unapplied: boolean;
+  /** The translation contains a simplified character. */
+  slipped: boolean;
+  /** 0 undecided, 1 questioned, 2 fine — what the row is tinted by. */
+  attention: 0 | 1 | 2;
   onPatch: (patch: Partial<GlossaryTerm>) => void;
   onRemove: () => void;
   onJump: (path: string) => void;
@@ -329,7 +399,16 @@ function TermRow({
   const [open, setOpen] = useState(false);
 
   return (
-    <li className="rounded border border-line bg-field/60 p-3">
+    <li
+      className={cn(
+        'rounded border p-3',
+        attention === 0
+          ? 'border-amber-500/50 bg-amber-500/5'
+          : attention === 1
+            ? 'border-amber-500/30 bg-field/60'
+            : 'border-line bg-field/60',
+      )}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="min-w-32 flex-1 truncate text-sm text-body" title={term.source}>
           {term.source}
@@ -369,6 +448,11 @@ function TermRow({
         <span>{ORIGIN_LABELS[term.origin]}</span>
         <span>{KIND_LABELS[term.kind]}</span>
         <span className="tabular-nums">{total} 處</span>
+        {slipped && (
+          <span className="text-amber-300" title="譯名裡有簡體字">
+            簡體
+          </span>
+        )}
         {unapplied && (
           <span className="text-amber-300" title="上一次翻譯的結果裡沒有出現這個譯名">
             未套用
