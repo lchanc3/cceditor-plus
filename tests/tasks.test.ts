@@ -316,6 +316,49 @@ describe('decideTranslations', () => {
     expect(user(calls[0])).toContain('rules Ashfall Keep');
   });
 
+  it('names the lorebook entry a term keys, which is what settles what it is', async () => {
+    // The real failure: a bare `church` was translated as a building on a card
+    // whose entry is called Church of the Eternal Light.
+    const withBook = card({
+      description: 'The church has stood for three centuries.',
+      character_book: {
+        name: '',
+        extensions: {},
+        entries: [
+          {
+            ...createEmptyLorebookEntry(0),
+            comment: 'Church of the Eternal Light',
+            keys: ['church', 'cathedral'],
+            content: 'The faith of the realm.',
+          },
+          {
+            ...createEmptyLorebookEntry(1),
+            comment: 'Cathedral of Divine Protection',
+            keys: ['cathedral'],
+            content: 'A building of white marble.',
+          },
+        ],
+      },
+    });
+
+    const { provider, calls } = fake('{"terms":[{"s":"church","t":"教會"}]}');
+    await decideTranslations(
+      provider,
+      withBook,
+      [term({ source: 'church' }), term({ source: 'cathedral' })],
+      options,
+    );
+
+    const listed = user(calls[0]).split('\n');
+    expect(listed.find((line) => line.includes('church'))).toContain(
+      '世界書條目：Church of the Eternal Light',
+    );
+
+    // `cathedral` keys both entries, so it names neither. Attributing it to
+    // whichever came first would be worse than saying nothing.
+    expect(listed.find((line) => line.startsWith('2. cathedral'))).not.toContain('世界書條目');
+  });
+
   it('carries already-decided terms as a must-reuse list', async () => {
     const { provider, calls } = fake('{"terms":[{"s":"Ashfall Keep","t":"燼落堡"}]}');
     await decideTranslations(

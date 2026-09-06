@@ -388,9 +388,11 @@ ${settled
 
 【規則】
 1. 每個詞只給一個譯名，整張卡共用。
-2. 譯名要貼合角色卡的語境與文風，不要逐字硬譯。
-3. 人名等不適合意譯的詞可以維持原文，此時把 keep 設為 true，不要填 t。
-4. 只處理【待決定的詞】清單裡的詞，s 必須與清單中的原文完全一致。${known}
+2. 譯名要貼合角色卡的語境與文風，不要逐字硬譯，也不要自造生硬的組合——譯名要是讀得順的中文詞。
+3. 先判斷這個詞在這張卡裡是什麼：組織、生物、地點、頭銜還是概念，再依那個身分翻，不要套用它在現實世界最常見的意思。奇幻設定裡的生物尤其不要用現實物種名。
+4. 避開在中文口語裡會被讀成別的意思的詞。
+5. 人名等不適合意譯的詞可以維持原文，此時把 keep 設為 true，不要填 t。
+6. 只處理【待決定的詞】清單裡的詞，s 必須與清單中的原文完全一致。${known}
 
 【輸出格式】只輸出 JSON，不要有任何說明文字：
 {"terms":[{"s":"原文詞","t":"譯名"},{"s":"原文詞","keep":true}]}`;
@@ -491,6 +493,38 @@ export async function extractTerms(
   return [...found.values()];
 }
 
+/**
+ * Which lorebook entry a term keys, by the entry's own name.
+ *
+ * This is the single most useful thing that can be said about a seeded term
+ * and it was being thrown away. Every key `seedTerms` takes arrives with kind
+ * `other`, so the listing said nothing but the word itself and seventy
+ * characters of surrounding prose — and a bare `church` was duly translated as
+ * a building on a card whose entry is called *Church of the Eternal Light*.
+ * Naming the entry settles what the word is before any rule has to.
+ */
+function entryTitles(fields: CardFields): Map<string, string> {
+  const seen = new Map<string, string | null>();
+
+  for (const entry of fields.character_book?.entries ?? []) {
+    const title = entry.comment?.trim();
+    if (!title) continue;
+    for (const key of [...entry.keys, ...(entry.secondary_keys ?? [])]) {
+      const folded = fold(key.trim());
+      if (folded === '') continue;
+      // A key on several entries names none of them, so it is dropped rather
+      // than attributed to whichever happened to come first. `cathedral` keys
+      // both the Order and the Cathedral on a real card.
+      const first = seen.get(folded);
+      seen.set(folded, first === undefined || first === title ? title : null);
+    }
+  }
+
+  const titles = new Map<string, string>();
+  for (const [key, title] of seen) if (title !== null) titles.set(key, title);
+  return titles;
+}
+
 /** The first place a term appears, with a little text either side of it. */
 function snippetFor(sections: CardSection[], source: string): string {
   const needle = fold(source);
@@ -525,6 +559,7 @@ export async function decideTranslations(
   if (pending.length === 0) return [];
 
   const sections = cardSections(fields);
+  const titles = entryTitles(fields);
   const settled = terms.filter(isDecided);
   const bySource = new Map(pending.map((term) => [fold(term.source), term]));
 
@@ -542,7 +577,12 @@ export async function decideTranslations(
     const listing = batch
       .map((term, i) => {
         const snippet = snippetFor(sections, term.source);
-        return `${i + 1}. ${term.source}（${term.kind}）${snippet ? `｜出現於：${snippet}` : ''}`;
+        const title = titles.get(fold(term.source));
+        return [
+          `${i + 1}. ${term.source}（${term.kind}）`,
+          title ? `｜世界書條目：${title}` : '',
+          snippet ? `｜出現於：${snippet}` : '',
+        ].join('');
       })
       .join('\n');
 
