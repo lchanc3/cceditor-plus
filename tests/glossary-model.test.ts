@@ -20,6 +20,7 @@ import {
   cardSections,
   duplicateTargets,
   glossaryReadiness,
+  keysWithoutTerms,
   mergeTerms,
   parseSectionPath,
   scanUsage,
@@ -557,5 +558,50 @@ describe('translatedKeysFor', () => {
 
   it('does not repeat itself when two keys share a translation', () => {
     expect(translatedKeysFor(['Grand Maiden Elder', 'the Elder'], terms)).toEqual(['聖女長老']);
+  });
+});
+
+describe('keysWithoutTerms', () => {
+  const terms = [
+    term({ source: 'Grand Maiden Elder', target: '聖女長老', aliases: ['the Elder'] }),
+    term({ source: 'Kaelen', target: '', keepOriginal: true }),
+    term({ source: 'Emberwright' }),
+  ];
+
+  it('names the keys nobody has decided anything about', () => {
+    // These are the only ones worth translating on their own: the glossary has
+    // no opinion to contradict.
+    expect(keysWithoutTerms(['Ashfall Keep', 'the Hollow'], terms)).toEqual([
+      'Ashfall Keep',
+      'the Hollow',
+    ]);
+  });
+
+  it('leaves out a key whose term was deliberately kept in the source language', () => {
+    // The distinction the whole function exists for. `translatedKeysFor` adds
+    // nothing for Kaelen either, but for the opposite reason — translating it
+    // anyway would undo somebody's decision.
+    expect(keysWithoutTerms(['Kaelen'], terms)).toEqual([]);
+  });
+
+  it('leaves out a key the glossary knows but has not settled yet', () => {
+    // Undecided is still an opinion in progress; the naming pass owns it.
+    expect(keysWithoutTerms(['Emberwright'], terms)).toEqual([]);
+  });
+
+  it('recognises a term by its alias, and ignores case and space', () => {
+    expect(keysWithoutTerms(['  the elder ', 'GRAND MAIDEN ELDER'], terms)).toEqual([]);
+  });
+
+  it('drops blanks and repeats', () => {
+    expect(keysWithoutTerms(['Ashfall Keep', ' ', 'ashfall keep'], terms)).toEqual([
+      'Ashfall Keep',
+    ]);
+  });
+
+  it('treats every key as unclaimed when there is no glossary at all', () => {
+    // The state a refused naming pass leaves you in, and the one where a
+    // whole-card run used to add no keys whatsoever.
+    expect(keysWithoutTerms(['Kaelen', 'Ashfall Keep'], [])).toEqual(['Kaelen', 'Ashfall Keep']);
   });
 });

@@ -471,6 +471,35 @@ export function unappliedTerms(
  * Original keys are never replaced, only added to: the source-language term
  * still has to match for anyone reading the card in the original.
  */
+/**
+ * The keys the glossary has no term for at all.
+ *
+ * Deliberately not "the keys `translatedKeysFor` returned nothing for". A key
+ * whose term is marked 保留原文 produced nothing on purpose, and handing that one
+ * to a translator anyway would quietly undo the decision. These are the keys
+ * nobody has decided anything about — the only ones worth spending a request on
+ * when the glossary cannot answer.
+ */
+export function keysWithoutTerms(keys: string[], terms: GlossaryTerm[]): string[] {
+  const known = new Set<string>();
+  for (const term of terms) {
+    for (const form of formsOf(term)) known.add(fold(form));
+  }
+
+  const seen = new Set<string>();
+  const orphans: string[] = [];
+
+  for (const key of keys) {
+    const trimmed = key.trim();
+    const folded = fold(trimmed);
+    if (trimmed === '' || known.has(folded) || seen.has(folded)) continue;
+    seen.add(folded);
+    orphans.push(trimmed);
+  }
+
+  return orphans;
+}
+
 export function translatedKeysFor(keys: string[], terms: GlossaryTerm[]): string[] {
   const byForm = new Map<string, GlossaryTerm>();
   for (const term of terms) {

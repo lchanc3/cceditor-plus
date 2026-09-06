@@ -154,6 +154,30 @@ const server = createServer(async (req, res) => {
     await wait(20_000);
   }
 
+  // Keyword translation answers in its own shape — one word per word sent,
+  // comma separated — and `translateKeywords` now throws away a reply that is
+  // any other shape. Echoing the prompt back, which is what the generic reply
+  // does, is exactly the malformed answer that guard exists to reject, so the
+  // fallback path could not be walked at all without answering it properly.
+  const keywordAsk = content.match(/待翻譯關鍵字：\n([\s\S]*?)(?:\n\n|$)/);
+  if (keywordAsk) {
+    const words = keywordAsk[1]
+      .split(/[,、，]/)
+      .map((word) => word.trim())
+      .filter((word) => word !== '');
+
+    console.log(`keywords  ${words.join(' ')}`);
+    send(res, 200, {
+      choices: [
+        {
+          message: { content: words.map((word) => `譯${word}`).join('、') },
+          finish_reason: 'stop',
+        },
+      ],
+    });
+    return;
+  }
+
   // The listing-based glossary passes want JSON, and a fake translation of the
   // prompt is not JSON — so without this the mock can exercise everything
   // except the flow that most needs walking end to end.

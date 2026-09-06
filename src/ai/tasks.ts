@@ -364,6 +364,9 @@ export async function translateText(
   return translated;
 }
 
+/** The longest a translated lorebook key can plausibly be. `Church of the Eternal Light` is 27. */
+const KEY_MAX_CHARS = 40;
+
 /**
  * The fallback for lorebook keys the glossary has no entry for.
  *
@@ -394,10 +397,34 @@ ${valid.join(', ')}`,
     { ...options, temperature: 0.1 },
   );
 
-  return cleanOutput(text)
+  // Empty fragments carry no information — a trailing separator is not a
+  // malformed answer — so they go before anything is judged.
+  const words = cleanOutput(text)
     .split(/[,、，]/)
     .map((k) => k.trim())
     .filter((k) => k !== '');
+
+  /*
+   * The reply is the shape that was asked for, or it is not used at all.
+   *
+   * A translation of N keywords is N keywords. That count is what tells an
+   * answer from prose: a model that writes a sentence — or restates the
+   * question, which is what a confused endpoint does — produces something full
+   * of commas whose every fragment is short enough to pass for a keyword on its
+   * own. And no item may be judged and quietly dropped, because dropping the
+   * bad half of a bad reply is how a malformed one gets repaired into a
+   * plausible-looking answer.
+   *
+   * Throwing the whole thing away costs nothing worth keeping. This is a
+   * best-effort fallback for keys the glossary has no term for; the entry keeps
+   * its original keys, which is where it started. Prose written into a lorebook
+   * key is the outcome worth avoiding — it matches nothing a reader would type,
+   * and it rides along inside the card from then on.
+   */
+  if (words.length !== valid.length) return [];
+  if (words.some((word) => word.length > KEY_MAX_CHARS || word.includes('\n'))) return [];
+
+  return words;
 }
 
 // ---------------------------------------------------------------------------

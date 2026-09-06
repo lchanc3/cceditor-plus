@@ -18,6 +18,7 @@ import {
   duplicateTargets,
   encodeTranslationMeta,
   glossaryReadiness,
+  keysWithoutTerms,
   scanUsage,
   simplifiedTargets,
   termsInText,
@@ -289,6 +290,38 @@ export default function App() {
     [dispatch, model, settle, translate],
   );
 
+  /**
+   * The keys to add to one lorebook entry.
+   *
+   * Keywords are appended, never replaced: the original terms still have to
+   * match for anyone reading the card in its own language.
+   *
+   * The glossary answers first, because a key translated on its own may not be
+   * the name the reader actually sees in the text, and then the entry never
+   * fires. What is left over is a key the glossary has no term for at all —
+   * never one it deliberately kept in the source language — and only those are
+   * worth a request of their own. Before this, a card whose glossary was thin
+   * or empty got nothing at all from a whole-card run, which is the state a
+   * refused naming pass leaves you in.
+   */
+  const addedKeysFor = useCallback(
+    async (taskKey: string, keys: string[]): Promise<string[]> => {
+      if (keys.length === 0) return [];
+
+      const terms = state.glossary.glossary;
+      const fromGlossary = translatedKeysFor(keys, terms);
+      const orphans = keysWithoutTerms(keys, terms);
+      if (orphans.length === 0) return fromGlossary;
+
+      const translated = await translate.translateKeys(taskKey, orphans);
+      if (!translated) return fromGlossary;
+
+      const already = new Set([...keys, ...fromGlossary].map((key) => key.toLowerCase()));
+      return [...fromGlossary, ...translated.filter((word) => !already.has(word.toLowerCase()))];
+    },
+    [state.glossary.glossary, translate],
+  );
+
   const translateLoreEntry = useCallback(
     async (index: number) => {
       const entry = model?.fields.character_book?.entries[index];
@@ -298,24 +331,9 @@ export default function App() {
       const content = await translate.translate(key, entry.content);
       if (content === null) return;
 
-      // Keywords are appended, never replaced: the original terms still have to
-      // match the text that triggers the entry.
-      //
-      // With a glossary, the translated key comes from the same place as the
-      // name used in the text above — which is the only thing that guarantees
-      // the entry still fires. Only a card with no glossary at all falls back
-      // to translating the keys independently.
-      const terms = state.glossary.glossary;
-      const appendTranslated = async (existing: string[]): Promise<string[]> => {
-        if (existing.length === 0) return existing;
-        if (terms.length > 0) return [...existing, ...translatedKeysFor(existing, terms)];
-        const translated = await translate.translateKeys(key, existing);
-        if (!translated) return existing;
-        return [...existing, ...translated.filter((word) => !existing.includes(word))];
-      };
-
-      const keys = await appendTranslated(entry.keys);
-      const secondary = await appendTranslated(entry.secondary_keys ?? []);
+      const existingSecondary = entry.secondary_keys ?? [];
+      const keys = [...entry.keys, ...(await addedKeysFor(key, entry.keys))];
+      const secondary = [...existingSecondary, ...(await addedKeysFor(key, existingSecondary))];
 
       dispatch({
         type: 'lore.patch',
@@ -328,7 +346,7 @@ export default function App() {
       });
       settle(key, entry.content, content);
     },
-    [dispatch, model, settle, state.glossary.glossary, translate],
+    [addedKeysFor, dispatch, model, settle, translate],
   );
 
   const translateWholeCard = useCallback(
@@ -340,35 +358,19 @@ export default function App() {
       // destroys the source the checks need.
       const before = new Map(cardSections(model.fields).map((s) => [s.path, s.text]));
       const entries = model.fields.character_book?.entries ?? [];
-      const terms = state.glossary.glossary;
 
       const results = await translate.translateWholeCard(model.fields, only);
       if (!results) return;
 
       const issues: Record<string, TranslationIssue[]> = {};
 
+      // The translations first, and the report with them, so nothing waits on
+      // the keys behind it.
       for (const result of results) {
         if (result.text === undefined) continue;
         const source = before.get(result.path) ?? '';
 
         dispatch({ type: 'section.set', path: result.path, value: result.text });
-
-        // A lorebook entry only fires if its keys match the translated text, so
-        // the keys come from the same glossary the translation was pinned to.
-        const lore = /^lore:(\d+)$/.exec(result.path);
-        if (lore && terms.length > 0) {
-          const index = Number(lore[1]);
-          const entry = entries[index];
-          if (entry) {
-            const keys = translatedKeysFor(entry.keys, terms);
-            if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
-
-            const secondary = translatedKeysFor(entry.secondary_keys ?? [], terms);
-            if (secondary.length > 0) {
-              dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
-            }
-          }
-        }
 
         const found = inspect(source, result.text);
         if (found.length > 0) issues[result.path] = found;
@@ -376,8 +378,40 @@ export default function App() {
       }
 
       setReport({ results, issues });
+
+      for (const result of results) {
+        const lore = /^lore:(\d+)$/.exec(result.path);
+        if (!lore) continue;
+
+        /*
+         * A blocked or throttled entry gets its translated keys too.
+         *
+         * A key is matched against what the reader types, not against this
+         * entry's own text, so withholding one because the entry itself came
+         * back refused is what actually kills it: the other nineteen entries
+         * now read in the target language, the reader types in that language,
+         * and this one can no longer be reached at all. Its content stays in
+         * the source language either way — that part is not being papered over.
+         *
+         * A section the run never reached is left alone. Nothing on the card
+         * has been translated in that case, so there is no language for a key
+         * to be wrong in yet.
+         */
+        const reached = result.text !== undefined || result.filtered || result.transient;
+        const entry = reached ? entries[Number(lore[1])] : undefined;
+        if (!entry) continue;
+
+        const index = Number(lore[1]);
+        const keys = await addedKeysFor(result.path, entry.keys);
+        if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
+
+        const secondary = await addedKeysFor(result.path, entry.secondary_keys ?? []);
+        if (secondary.length > 0) {
+          dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
+        }
+      }
     },
-    [checkApplied, dispatch, inspect, model, state.glossary.glossary, translate],
+    [addedKeysFor, checkApplied, dispatch, inspect, model, translate],
   );
 
   // ---- glossary ----------------------------------------------------------

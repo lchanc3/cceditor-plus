@@ -15,6 +15,7 @@ import {
   decideTranslations,
   extractTerms,
   reviewTranslations,
+  translateKeywords,
   sectionContext,
   translateCard,
   translateText,
@@ -532,6 +533,41 @@ describe('decideTranslations', () => {
 
     await decideTranslations(provider, fields, pending, options);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('translateKeywords', () => {
+  it('splits on either script’s separators', async () => {
+    const { provider } = fake('蘋果, 樹、房子');
+    expect(await translateKeywords(provider, ['apple', 'tree', 'house'], options)).toEqual([
+      '蘋果',
+      '樹',
+      '房子',
+    ]);
+  });
+
+  it('throws away a reply that restates the question instead of answering it', async () => {
+    // What a confused endpoint returns. Every fragment of it is short enough to
+    // pass for a keyword — the count is the only thing that tells prose apart
+    // from an answer, and the whole-card run now reaches this path for every
+    // key the glossary has no term for.
+    const { provider } = fake('請將以下關鍵字清單翻譯成繁體中文，並以逗號分隔回傳。'.repeat(3));
+    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  });
+
+  it('throws away an answer with an explanation attached', async () => {
+    const { provider } = fake('蜂巢, 說明：\n這個詞指的是蟲子的巢穴。');
+    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  });
+
+  it('throws away one long enough to be a sentence on its own', async () => {
+    const { provider } = fake('這個關鍵字在這張卡的語境裡指的是蟲族聚居的巢穴而不是蜜蜂的窩'.repeat(2));
+    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  });
+
+  it('ignores blanks around the separators rather than counting them', async () => {
+    const { provider } = fake('蘋果, 樹, ');
+    expect(await translateKeywords(provider, ['apple', 'tree'], options)).toEqual(['蘋果', '樹']);
   });
 });
 
