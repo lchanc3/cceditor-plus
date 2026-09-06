@@ -542,6 +542,78 @@ function snippetFor(sections: CardSection[], source: string): string {
 }
 
 /**
+ * The pending terms as families, so ones sharing a root travel together.
+ *
+ * Batches of forty are what let a 130-term card be named at all, but they also
+ * mean the model decides each batch blind to the others. A real card came back
+ * with `keziah` kept in the source language and `keziah's domain` rendered
+ * 凱齊亞的領域: the two were never in front of it at the same time, so no
+ * instruction could have made them agree. Only being in one request can.
+ *
+ * A term's family is named by the shortest term contained in it, found with the
+ * same word-aware matcher the glossary uses everywhere else — so `Kael` does not
+ * claim `Kaelen`, and `sister` does not claim `sisters`. Plurals therefore stay
+ * apart, which costs nothing: they are separate words that reach the same
+ * translation on their own. It is the possessives and the compounds that drift.
+ *
+ * Families are emitted in the order their first member had, so everything else
+ * keeps the seeded order — which follows the lorebook, and already puts one
+ * entry's vocabulary together.
+ */
+function relatedFamilies(pending: GlossaryTerm[]): GlossaryTerm[][] {
+  const rootOf = new Map<GlossaryTerm, string>();
+
+  for (const term of pending) {
+    const root = termsInText(term.source, pending).reduce(
+      (shortest, inside) => (inside.source.length < shortest.length ? inside.source : shortest),
+      term.source,
+    );
+    rootOf.set(term, fold(root));
+  }
+
+  const families = new Map<string, GlossaryTerm[]>();
+  for (const term of pending) {
+    const key = rootOf.get(term)!;
+    families.set(key, [...(families.get(key) ?? []), term]);
+  }
+
+  const ordered: GlossaryTerm[][] = [];
+  const emitted = new Set<string>();
+
+  for (const term of pending) {
+    const key = rootOf.get(term)!;
+    if (emitted.has(key)) continue;
+    emitted.add(key);
+    ordered.push(families.get(key)!);
+  }
+
+  return ordered;
+}
+
+/**
+ * Pack families into requests without splitting one that would fit.
+ *
+ * A family longer than the limit gets a request to itself rather than being cut
+ * in half, for the same reason an oversized section does: the split is the one
+ * thing this is trying to avoid.
+ */
+function batchTerms(families: GlossaryTerm[][], limit: number): GlossaryTerm[][] {
+  const batches: GlossaryTerm[][] = [];
+  let current: GlossaryTerm[] = [];
+
+  for (const family of families) {
+    if (current.length > 0 && current.length + family.length > limit) {
+      batches.push(current);
+      current = [];
+    }
+    current.push(...family);
+  }
+
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
+/**
  * Settle on a translation for every term that does not have one.
  *
  * Terms somebody already decided are sent as a "must reuse" list rather than
@@ -563,10 +635,7 @@ export async function decideTranslations(
   const settled = terms.filter(isDecided);
   const bySource = new Map(pending.map((term) => [fold(term.source), term]));
 
-  const batches: GlossaryTerm[][] = [];
-  for (let i = 0; i < pending.length; i += DECIDE_BATCH_TERMS) {
-    batches.push(pending.slice(i, i + DECIDE_BATCH_TERMS));
-  }
+  const batches = batchTerms(relatedFamilies(pending), DECIDE_BATCH_TERMS);
 
   const decisions: GlossaryTerm[] = [];
   const seen = new Set<string>();

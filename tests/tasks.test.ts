@@ -359,6 +359,49 @@ describe('decideTranslations', () => {
     expect(listed.find((line) => line.startsWith('2. cathedral'))).not.toContain('世界書條目');
   });
 
+  it('keeps terms sharing a root in one request, however far apart they were', async () => {
+    // The real failure: keziah was kept in the source language in one batch
+    // while keziah's domain was translated in another, and no instruction could
+    // have reconciled them because they were never seen together.
+    const filler = Array.from({ length: 45 }, (_, i) => term({ source: `filler${i}` }));
+    const glossary = [
+      term({ source: "keziah's domain" }),
+      ...filler,
+      term({ source: 'keziah' }),
+      term({ source: "keziah's den" }),
+    ];
+
+    const { provider, calls } = fake('{"terms":[]}');
+    await decideTranslations(provider, card(), glossary, options);
+
+    expect(calls.length).toBeGreaterThan(1);
+
+    const carrying = calls.filter((call) => /(^|\n)\d+\. keziah/m.test(user(call)));
+    expect(carrying).toHaveLength(1);
+
+    const listing = user(carrying[0]);
+    for (const source of ['keziah', "keziah's domain", "keziah's den"]) {
+      expect(listing).toContain(source);
+    }
+  });
+
+  it('does not drag plurals into the family, since they settle on their own', async () => {
+    const filler = Array.from({ length: 45 }, (_, i) => term({ source: `filler${i}` }));
+    const { provider, calls } = fake('{"terms":[]}');
+    await decideTranslations(
+      provider,
+      card(),
+      [term({ source: 'sister' }), ...filler, term({ source: 'sisters' })],
+      options,
+    );
+
+    // `sister` does not match inside `sisters` — the glossary's matcher respects
+    // word boundaries — so nothing reorders and the two stay where they were.
+    const first = user(calls[0]);
+    expect(first).toContain('1. sister（');
+    expect(first).not.toContain('sisters');
+  });
+
   it('carries already-decided terms as a must-reuse list', async () => {
     const { provider, calls } = fake('{"terms":[{"s":"Ashfall Keep","t":"燼落堡"}]}');
     await decideTranslations(
