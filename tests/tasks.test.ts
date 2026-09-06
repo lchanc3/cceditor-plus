@@ -537,7 +537,7 @@ describe('decideTranslations', () => {
 
 describe('reviewTranslations', () => {
   const fields = card({
-    name: 'Akane',
+    name: 'Keziah',
     description: 'The hive answers to Keziah, and her parasites wear the shapes of men.',
   });
 
@@ -581,7 +581,7 @@ describe('reviewTranslations', () => {
     // Judging 蜂巢 against 蟲巢 takes knowing what the card is about; the term
     // and its own translation say nothing either way.
     expect(listing).toContain('出現於：');
-    expect(system(calls[0])).toContain('角色：Akane');
+    expect(system(calls[0])).toContain('角色：Keziah');
     expect(system(calls[0])).toContain('parasites wear the shapes of men');
   });
 
