@@ -252,7 +252,8 @@ describe('extractTerms', () => {
   });
 
   it('retries malformed JSON, then succeeds', async () => {
-    const { provider, calls } = fake('抱歉，我無法完成。', '{"terms":[{"s":"Elder"}]}');
+    // Not a refusal — that is a different failure with a different message.
+    const { provider, calls } = fake('這不是 JSON。', '{"terms":[{"s":"Elder"}]}');
     const found = await extractTerms(provider, card({ description: 'x' }), options);
 
     expect(calls).toHaveLength(2);
@@ -280,6 +281,58 @@ describe('extractTerms', () => {
       extractTerms(provider, card({ description: 'x' }), { ...options, signal: controller.signal }),
     ).rejects.toThrow();
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('refusals that arrive as an ordinary 200', () => {
+  const long =
+    'The Order of the Sacred Shield keeps the cathedral, and its sisters walk the ' +
+    'walls at every hour of the night, watching the swamp for what crawls out of it. ' +
+    'The initiates are told nothing of what the matrons already know.';
+
+  it('does not write a refusal into the card as though it were the translation', async () => {
+    const { provider, calls } = fake("I'm sorry, but I can't help with that request.");
+
+    await expect(translateText(provider, long, options)).rejects.toThrow(/拒絕翻譯/);
+
+    // Not retried: a refusal refuses again, and each attempt costs a request.
+    expect(calls).toHaveLength(1);
+  });
+
+  it('marks the refusal as filtered, so one section does not fail the run', async () => {
+    const { provider } = fake('抱歉，我無法翻譯這段內容。');
+    const error = await translateText(provider, long, options).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).filtered).toBe(true);
+  });
+
+  it('lets a short source translate into a short apology, which is not a refusal', async () => {
+    // The guard that keeps this check from eating real work: a section whose
+    // source apologises should come back apologising.
+    const { provider } = fake('對不起，我來遲了。');
+    await expect(translateText(provider, 'I am sorry, I am late.', options)).resolves.toBe(
+      '對不起，我來遲了。',
+    );
+  });
+
+  it('calls a refusal a refusal on the JSON tasks, not a format error', async () => {
+    const { provider, calls } = fake("I'm sorry, I can't assist with this content.");
+    const error = await extractTerms(provider, card({ description: 'A knight.' }), options).catch(
+      (e) => e,
+    );
+
+    expect((error as Error).message).toContain('拒絕作答');
+    expect((error as Error).message).not.toContain('格式不對');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('still calls malformed JSON a format error, and still retries it', async () => {
+    const { provider, calls } = fake('{"nope": 1}', '{"terms":[{"s":"Ashfall","t":"燼落"}]}');
+    const found = await extractTerms(provider, card({ description: 'Ashfall.' }), options);
+
+    expect(found.map((term) => term.source)).toEqual(['Ashfall']);
+    expect(calls.length).toBeGreaterThan(1);
   });
 });
 

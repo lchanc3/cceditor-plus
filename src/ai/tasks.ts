@@ -280,8 +280,50 @@ function chatJson<T>(
       json: true,
       signal: options.signal,
     });
-    return parseJsonItems<T>(text, key, context);
+    try {
+      return parseJsonItems<T>(text, key, context);
+    } catch (error) {
+      // Valid output here is JSON, so prose that opens with a refusal is one.
+      // Retrying it three times only buys three more refusals.
+      if (!REFUSAL.test(text)) throw error;
+      throw new ProviderError(
+        `${context}時模型拒絕作答，不是格式問題。回應開頭是：${text.trim().slice(0, 80)}`,
+        { retryable: false, filtered: true },
+      );
+    }
   }, options);
+}
+
+/**
+ * What a model says instead of doing the work.
+ *
+ * A refusal that arrives as an HTTP error or a `content_filter` finish reason
+ * is already understood. This is the other kind: a perfectly ordinary 200
+ * carrying a polite sentence about why not. Nothing downstream could tell it
+ * from an answer, so on the JSON tasks it surfaced as「格式不對」— which sends
+ * the reader off to fix their prompt or their parser — and on a translation it
+ * was simply written into the card as though it were the translation.
+ *
+ * Anchored to the start, because a card may well contain an apology in its
+ * dialogue; a refusal is what the reply opens with.
+ */
+const REFUSAL =
+  /^\s*(?:i\s*(?:'m|’m|am)\s+(?:sorry|afraid|unable)|i\s+(?:can'?t|cannot|won'?t|will\s+not)|sorry[,.]|as\s+an\s+ai\b|i\s+apolog|抱歉|對不起|对不起|我(?:無法|无法|不能|不會|不会|很抱歉))/i;
+
+/**
+ * Whether a translation is really a refusal.
+ *
+ * The marker alone is not enough: a section whose source apologises should come
+ * back apologising, and a card has plenty of dialogue that does. What gives a
+ * refusal away is that the apology has no counterpart in the source — the model
+ * opened with something the text it was given never said.
+ *
+ * The length cap is the second half of that. A long reply that merely opens with
+ * an apologetic line is a translation of one; a refusal is a sentence or two
+ * standing in for a whole section.
+ */
+function refusedToTranslate(source: string, output: string): boolean {
+  return REFUSAL.test(output) && !REFUSAL.test(source) && output.length < 200;
 }
 
 /** Strip a wrapper the model added despite being told not to. */
@@ -311,7 +353,15 @@ export async function translateText(
     ],
     options,
   );
-  return cleanOutput(text);
+  const translated = cleanOutput(text);
+  if (refusedToTranslate(content, translated)) {
+    throw new ProviderError(`模型拒絕翻譯這一段，回覆的是：${translated.slice(0, 80)}`, {
+      retryable: false,
+      filtered: true,
+    });
+  }
+
+  return translated;
 }
 
 /**
