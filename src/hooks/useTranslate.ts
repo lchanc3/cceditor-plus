@@ -11,7 +11,7 @@ import {
   reviewTranslations,
   sectionContext,
   translateCard,
-  translateKeywords,
+  translateLoreKeys,
   translateText,
 } from '../ai';
 import type { CardFields } from '../card';
@@ -137,10 +137,16 @@ export function useTranslate(
     ],
   );
 
+  /**
+   * Translations for lorebook keys, for the whole card in one go.
+   *
+   * Keyed by the source key folded to lower case, so a caller looks up what it
+   * asked about rather than counting its way through a list.
+   */
   const translateKeys = useCallback(
-    (key: string, keywords: string[]) =>
+    (key: string, keys: string[]) =>
       run(key, (signal) =>
-        translateKeywords(provider, keywords, { targetLang: settings.targetLang, gate, signal }),
+        translateLoreKeys(provider, keys, { targetLang: settings.targetLang, gate, signal }),
       ),
     [gate, provider, run, settings.targetLang],
   );

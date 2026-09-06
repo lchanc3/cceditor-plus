@@ -7,6 +7,8 @@ import { cn } from '../lib/utils';
 export interface RunReport {
   results: SectionResult[];
   issues: Record<string, TranslationIssue[]>;
+  /** The lorebook keys could not be translated, so those entries keep only their originals. */
+  keysFailed?: boolean;
 }
 
 const ISSUE_LABELS: Record<TranslationIssue['kind'], string> = {
@@ -37,7 +39,7 @@ export function TranslateReport({
   onDismiss: () => void;
   onJump: (path: string) => void;
 }) {
-  const { results, issues } = report;
+  const { results, issues, keysFailed } = report;
   const done = results.filter((r) => r.text !== undefined);
   const failed = results.filter((r) => r.error !== undefined && !r.skipped);
   const skipped = results.filter((r) => r.skipped);
@@ -69,6 +71,13 @@ export function TranslateReport({
           {skipped.length > 0 && (
             <p className="text-xs text-dim">
               連續的錯誤看起來會影響每一段（金鑰、模型名稱或連線問題），因此提前停止，沒有把剩下的請求送出去。
+            </p>
+          )}
+
+          {keysFailed && (
+            <p className="text-xs text-dim">
+              世界書的關鍵字沒有翻譯成功，那些條目目前只有原文關鍵字——譯後的卡片上，讀者打中文不會觸發它們。
+              重新翻譯一次會再試，或到「詞彙」分頁決定譯名後按「套用譯詞到世界書關鍵字」。
             </p>
           )}
 

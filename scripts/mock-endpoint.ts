@@ -154,23 +154,25 @@ const server = createServer(async (req, res) => {
     await wait(20_000);
   }
 
-  // Keyword translation answers in its own shape — one word per word sent,
-  // comma separated — and `translateKeywords` now throws away a reply that is
-  // any other shape. Echoing the prompt back, which is what the generic reply
-  // does, is exactly the malformed answer that guard exists to reject, so the
-  // fallback path could not be walked at all without answering it properly.
-  const keywordAsk = content.match(/待翻譯關鍵字：\n([\s\S]*?)(?:\n\n|$)/);
-  if (keywordAsk) {
-    const words = keywordAsk[1]
-      .split(/[,、，]/)
-      .map((word) => word.trim())
-      .filter((word) => word !== '');
+  // Lorebook keys are asked about by number and answered by number. The generic
+  // reply — the prompt, echoed back — is exactly the malformed answer the real
+  // parser is built to reject, so this path could not be walked at all without
+  // answering it in its own shape.
+  if (content.includes('【待翻譯關鍵字】')) {
+    // Only the listing, never the system prompt: its rules are a numbered list
+    // too, and a mock that answers those is answering its own instructions.
+    const listing = parsed.messages?.filter((m) => m.role === 'user').at(-1)?.content ?? '';
+    const numbered = [...listing.matchAll(/^(\d+)\. (.+)$/gm)];
 
-    console.log(`keywords  ${words.join(' ')}`);
+    console.log(`keys  ${numbered.length}: ${numbered.map((m) => m[2]).join(' ')}`);
     send(res, 200, {
       choices: [
         {
-          message: { content: words.map((word) => `譯${word}`).join('、') },
+          message: {
+            content: JSON.stringify({
+              keys: numbered.map((match) => ({ i: Number(match[1]), t: `譯${match[2]}` })),
+            }),
+          },
           finish_reason: 'stop',
         },
       ],

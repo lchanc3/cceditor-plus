@@ -366,65 +366,122 @@ export async function translateText(
 
 /** The longest a translated lorebook key can plausibly be. `Church of the Eternal Light` is 27. */
 const KEY_MAX_CHARS = 40;
+/** Keys per request. A card's whole lorebook is normally one of these. */
+const KEYS_BATCH = 60;
 
 /**
- * The fallback for lorebook keys the glossary has no entry for.
+ * Whether an answer is an explanation rather than a key.
  *
- * Prefer `translatedKeysFor`: a key translated independently of the entry's
- * text may not match the term the reader actually types, and then the entry
- * never fires. This exists for the terms that never made it into a glossary.
+ * Length alone does not catch it: a sentence of thirty characters is shorter
+ * than the cap and still nothing a reader would ever type. A full stop is what
+ * gives it away — a lorebook key does not contain one, and a sentence almost
+ * always does. Written into an entry, prose matches nothing and has to be found
+ * and deleted by hand later.
  */
-export async function translateKeywords(
+const looksLikeProse = (word: string): boolean =>
+  word.length > KEY_MAX_CHARS || /[\n。．｡]/.test(word);
+
+interface RawKey {
+  i?: unknown;
+  t?: unknown;
+}
+
+const keysPrompt = (targetLang: string): string =>
+  `你是一位協助翻譯角色卡的術語整理員。請把以下世界書關鍵字翻譯成${targetLang}。
+
+【這些字的用途】它們是拿去比對讀者輸入的文字，不是拿來閱讀的句子。
+
+【規則】
+1. 只輸出那個詞本身：不要加說明、不要加引號或標點、不要造句。
+2. 同一個意思的不同寫法給同一個譯名（7 yo、7 year-old、age: 7 都是七歲）。
+3. 人名、地名等專有名詞照譯；不適合意譯的用音譯。
+4. 不確定怎麼翻的那一筆整個不要輸出——不要給空字串，也不要把原文抄回來。
+5. i 必須是清單上的編號，t 是那個編號的譯名。
+
+【輸出格式】只輸出 JSON，不要有任何說明文字：
+{"keys":[{"i":1,"t":"譯名"}]}`;
+
+/**
+ * Translations for lorebook keys the glossary has no term for.
+ *
+ * Prefer `translatedKeysFor`: a key translated apart from the entry's text may
+ * not match the name the reader actually sees, and then the entry never fires.
+ * This is for the keys that never made it into a glossary — which is not only
+ * the degraded case. A card set in the real world has no invented names to
+ * settle, so its glossary is legitimately empty and this is the whole of its
+ * lorebook key handling.
+ *
+ * Numbered rather than positional, and answered by number.
+ *
+ * The previous version asked for a comma-separated line and matched the reply
+ * up by position, which is safe for the three keys one entry carries and not
+ * safe at all for the sixty a card carries: a model that drops one key and
+ * merges two others returns a list of exactly the right length with every
+ * answer after the seam attached to the wrong word. Numbering removes the
+ * failure mode rather than detecting it — a dropped key costs that key alone,
+ * and nothing can be silently misattributed.
+ *
+ * Which is what lets the whole card go in one request instead of two per entry.
+ * A twenty-entry card was forty round trips, run after the report already said
+ * the translation had finished.
+ */
+export async function translateLoreKeys(
   provider: Provider,
-  keywords: string[],
-  options: TranslateOptions,
-): Promise<string[]> {
-  const valid = keywords.map((k) => k.trim()).filter((k) => k !== '');
-  if (valid.length === 0) return [];
+  keys: string[],
+  options: TranslateOptions & { onProgress?: ProgressFn },
+): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
 
-  const text = await chatWithRetry(
-    provider,
-    [
-      {
-        role: 'user',
-        content: `請將以下關鍵字清單翻譯成${options.targetLang}，並以逗號分隔回傳。除了翻譯的語言實體外，絕不輸出任何解釋或句子。
-例如：apple, tree -> 蘋果, 樹
+  const wanted: string[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    const trimmed = key.trim();
+    // Asking twice about two spellings that fold together is a request spent to
+    // be told the same thing.
+    if (trimmed === '' || seen.has(fold(trimmed))) continue;
+    seen.add(fold(trimmed));
+    wanted.push(trimmed);
+  }
+  if (wanted.length === 0) return found;
 
-待翻譯關鍵字：
-${valid.join(', ')}`,
-      },
-    ],
-    { ...options, temperature: 0.1 },
-  );
+  const batches: string[][] = [];
+  for (let at = 0; at < wanted.length; at += KEYS_BATCH) {
+    batches.push(wanted.slice(at, at + KEYS_BATCH));
+  }
 
-  // Empty fragments carry no information — a trailing separator is not a
-  // malformed answer — so they go before anything is judged.
-  const words = cleanOutput(text)
-    .split(/[,、，]/)
-    .map((k) => k.trim())
-    .filter((k) => k !== '');
+  for (const [index, batch] of batches.entries()) {
+    options.signal?.throwIfAborted();
 
-  /*
-   * The reply is the shape that was asked for, or it is not used at all.
-   *
-   * A translation of N keywords is N keywords. That count is what tells an
-   * answer from prose: a model that writes a sentence — or restates the
-   * question, which is what a confused endpoint does — produces something full
-   * of commas whose every fragment is short enough to pass for a keyword on its
-   * own. And no item may be judged and quietly dropped, because dropping the
-   * bad half of a bad reply is how a malformed one gets repaired into a
-   * plausible-looking answer.
-   *
-   * Throwing the whole thing away costs nothing worth keeping. This is a
-   * best-effort fallback for keys the glossary has no term for; the entry keeps
-   * its original keys, which is where it started. Prose written into a lorebook
-   * key is the outcome worth avoiding — it matches nothing a reader would type,
-   * and it rides along inside the card from then on.
-   */
-  if (words.length !== valid.length) return [];
-  if (words.some((word) => word.length > KEY_MAX_CHARS || word.includes('\n'))) return [];
+    const items = await chatJson<RawKey>(
+      provider,
+      [
+        { role: 'system', content: keysPrompt(options.targetLang) },
+        {
+          role: 'user',
+          content: `【待翻譯關鍵字】\n${batch.map((key, i) => `${i + 1}. ${key}`).join('\n')}`,
+        },
+      ],
+      options,
+      'keys',
+      '翻譯世界書關鍵字',
+    );
 
-  return words;
+    for (const item of items) {
+      const at = Number(item.i) - 1;
+      const source = Number.isInteger(at) ? batch[at] : undefined;
+      const translated = asText(item.t);
+
+      if (source === undefined || translated === '' || looksLikeProse(translated)) continue;
+      // An echo of the key adds nothing; the original is already on the entry.
+      if (fold(translated) === fold(source)) continue;
+
+      found.set(fold(source), translated);
+    }
+
+    options.onProgress?.(index + 1, batches.length);
+  }
+
+  return found;
 }
 
 // ---------------------------------------------------------------------------

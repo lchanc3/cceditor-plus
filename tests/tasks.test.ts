@@ -15,7 +15,7 @@ import {
   decideTranslations,
   extractTerms,
   reviewTranslations,
-  translateKeywords,
+  translateLoreKeys,
   sectionContext,
   translateCard,
   translateText,
@@ -536,38 +536,92 @@ describe('decideTranslations', () => {
   });
 });
 
-describe('translateKeywords', () => {
-  it('splits on either script’s separators', async () => {
-    const { provider } = fake('蘋果, 樹、房子');
-    expect(await translateKeywords(provider, ['apple', 'tree', 'house'], options)).toEqual([
-      '蘋果',
-      '樹',
-      '房子',
+describe('translateLoreKeys', () => {
+  const answer = (pairs: [number, string][]) =>
+    JSON.stringify({ keys: pairs.map(([i, t]) => ({ i, t })) });
+
+  it('asks by number and answers by number', async () => {
+    const { provider, calls } = fake(answer([[1, '蘋果'], [2, '樹']]));
+    const found = await translateLoreKeys(provider, ['apple', 'tree'], options);
+
+    expect(user(calls[0])).toContain('1. apple');
+    expect(user(calls[0])).toContain('2. tree');
+    expect([...found]).toEqual([
+      ['apple', '蘋果'],
+      ['tree', '樹'],
     ]);
   });
 
-  it('throws away a reply that restates the question instead of answering it', async () => {
-    // What a confused endpoint returns. Every fragment of it is short enough to
-    // pass for a keyword — the count is the only thing that tells prose apart
-    // from an answer, and the whole-card run now reaches this path for every
-    // key the glossary has no term for.
-    const { provider } = fake('請將以下關鍵字清單翻譯成繁體中文，並以逗號分隔回傳。'.repeat(3));
-    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  it('gives a dropped key nothing rather than giving it the next key’s answer', async () => {
+    // The reason for numbering. Matched up by position, an answer that skips
+    // one key hands every later key the wrong word, and a card full of
+    // confidently wrong lorebook triggers looks exactly like a working one.
+    const { provider } = fake(answer([[1, '蜂巢'], [3, '寄生體']]));
+    const found = await translateLoreKeys(provider, ['hive', 'nest', 'parasite'], options);
+
+    expect(found.get('hive')).toBe('蜂巢');
+    expect(found.has('nest')).toBe(false);
+    expect(found.get('parasite')).toBe('寄生體');
   });
 
-  it('throws away an answer with an explanation attached', async () => {
-    const { provider } = fake('蜂巢, 說明：\n這個詞指的是蟲子的巢穴。');
-    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  it('takes a whole card of keys in one request', async () => {
+    const keys = Array.from({ length: 55 }, (_, i) => `key${i}`);
+    const { provider, calls } = fake('{"keys":[]}');
+
+    await translateLoreKeys(provider, keys, options);
+    // Two per entry across twenty entries was forty round trips, and they ran
+    // after the report already said the translation had finished.
+    expect(calls).toHaveLength(1);
   });
 
-  it('throws away one long enough to be a sentence on its own', async () => {
-    const { provider } = fake('這個關鍵字在這張卡的語境裡指的是蟲族聚居的巢穴而不是蜜蜂的窩'.repeat(2));
-    expect(await translateKeywords(provider, ['hive'], options)).toEqual([]);
+  it('splits a lorebook too big for one request', async () => {
+    const keys = Array.from({ length: 130 }, (_, i) => `key${i}`);
+    const { provider, calls } = fake('{"keys":[]}');
+
+    await translateLoreKeys(provider, keys, options);
+    expect(calls).toHaveLength(3);
+    // Numbering restarts per request, or the second batch answers about the first.
+    expect(user(calls[1])).toContain('1. key60');
   });
 
-  it('ignores blanks around the separators rather than counting them', async () => {
-    const { provider } = fake('蘋果, 樹, ');
-    expect(await translateKeywords(provider, ['apple', 'tree'], options)).toEqual(['蘋果', '樹']);
+  it('asks once about spellings that fold together', async () => {
+    const { provider, calls } = fake(answer([[1, '蜂巢']]));
+    const found = await translateLoreKeys(provider, ['hive', 'Hive', ' HIVE '], options);
+
+    const listed = user(calls[0]).split('\n').filter((line) => /^\d+\. /.test(line));
+    expect(listed).toHaveLength(1);
+    // And the one answer serves all three, since they are looked up folded.
+    expect(found.get('hive')).toBe('蜂巢');
+  });
+
+  it('ignores an answer to a number nobody asked about', async () => {
+    const { provider } = fake(answer([[9, '憑空'], [1, '蜂巢']]));
+    const found = await translateLoreKeys(provider, ['hive'], options);
+    expect([...found]).toEqual([['hive', '蜂巢']]);
+  });
+
+  it('drops an answer that is an explanation rather than a key', async () => {
+    const { provider } = fake(
+      answer([
+        [1, '這個關鍵字在這張卡的語境裡指的是蟲族聚居的巢穴，而不是蜜蜂的窩。'],
+        [2, '巢穴\n（附註）'],
+      ]),
+    );
+    const found = await translateLoreKeys(provider, ['hive', 'nest'], options);
+    expect(found.size).toBe(0);
+  });
+
+  it('drops an answer that is the key handed back', async () => {
+    // The original is already on the entry, so an echo only adds a repeat.
+    const { provider } = fake(answer([[1, 'hive'], [2, 'NEST']]));
+    const found = await translateLoreKeys(provider, ['hive', 'nest'], options);
+    expect(found.size).toBe(0);
+  });
+
+  it('sends nothing when there is nothing to ask about', async () => {
+    const { provider, calls } = fake('{"keys":[]}');
+    expect((await translateLoreKeys(provider, ['  ', ''], options)).size).toBe(0);
+    expect(calls).toHaveLength(0);
   });
 });
 
