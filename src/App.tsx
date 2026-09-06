@@ -1,7 +1,7 @@
 import { Download, Languages, Loader2, RotateCcw, Settings, Sparkles } from 'lucide-react';
 import { ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { AISettings, loadSettings, saveSettings } from './ai';
+import { AISettings, TermReview, loadSettings, saveSettings } from './ai';
 import {
   CardFields,
   CardModel,
@@ -90,6 +90,22 @@ export default function App() {
    * be worked out at the moment a translation lands, never afterwards.
    */
   const [unapplied, setUnapplied] = useState<Set<string>>(new Set());
+  /**
+   * What the last review pass thought was wrong.
+   *
+   * Kept here rather than on the card: a finding is a question waiting to be
+   * answered, not a property of the glossary, and one that outlived the session
+   * that raised it would be answering for a card that has since moved on.
+   */
+  const [reviews, setReviews] = useState<TermReview[]>([]);
+  /** Whether a review has run at all, which is what "found nothing" needs to mean anything. */
+  const [reviewed, setReviewed] = useState(false);
+  /**
+   * Findings waved off by hand, held apart from the findings themselves so that
+   * "the pass found nothing" and "you have answered all of them" stay two
+   * different things to say.
+   */
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   /** The outcome of the last translation run, until it is dismissed. */
   const [report, setReport] = useState<RunReport | null>(null);
   /** Element id a jump is heading for, cleared once the scroll has happened. */
@@ -97,6 +113,13 @@ export default function App() {
   const [translateOpen, setTranslateOpen] = useState(false);
   /** Outcome of the last "apply glossary to lorebook keys" action. */
   const [keysNotice, setKeysNotice] = useState('');
+
+  /** Findings belong to the card that was reviewed, so a new card starts clean. */
+  const clearReviews = useCallback(() => {
+    setReviews([]);
+    setReviewed(false);
+    setDismissed(new Set());
+  }, []);
 
   const { model, imageBytes } = state;
   const translate = useTranslate(settings, state.glossary, model?.fields ?? null);
@@ -133,6 +156,7 @@ export default function App() {
         setActiveTab('basic');
         setUnapplied(new Set());
         setReport(null);
+        clearReviews();
         setDraftOffer(null);
       } catch (error) {
         setLoadError((error as Error).message || '無法讀取這個檔案。');
@@ -140,7 +164,7 @@ export default function App() {
         setBusy(false);
       }
     },
-    [actions],
+    [actions, clearReviews],
   );
 
   /** Swaps only the artwork. The old build reparsed the file and lost every edit. */
@@ -164,8 +188,9 @@ export default function App() {
     translate.cancelAll();
     setUnapplied(new Set());
     setReport(null);
+    clearReviews();
     reset();
-  }, [reset, state.dirty, translate]);
+  }, [clearReviews, reset, state.dirty, translate]);
 
   // ---- translation -------------------------------------------------------
 
@@ -388,6 +413,72 @@ export default function App() {
     const decided = await translate.decide(model.fields, glossary);
     if (decided) dispatch({ type: 'glossary.merge', terms: decided });
   }, [dispatch, glossary, model, settings.targetLang, translate]);
+
+  const runReview = useCallback(async () => {
+    if (!model) return;
+    const found = await translate.review(model.fields, glossary);
+    // `null` is a cancellation or a failure, and the task's own banner already
+    // says which — so the findings already on screen are left alone.
+    if (!found) return;
+
+    setReviews(found);
+    setReviewed(true);
+    // A fresh reading supersedes what was waved off in the last one.
+    setDismissed(new Set());
+  }, [glossary, model, translate]);
+
+  /**
+   * The findings that still describe the glossary as it stands.
+   *
+   * A finding is about one particular translation, so the moment the term moves
+   * on — taken, retyped, decided differently, or locked — it stops applying and
+   * goes away without anybody having to dismiss it.
+   */
+  const openReviews = useMemo(() => {
+    const byTerm = new Map(glossary.map((term) => [term.source, term]));
+    const open = new Map<string, TermReview>();
+
+    for (const review of reviews) {
+      const term = byTerm.get(review.source);
+      if (!term || term.locked || dismissed.has(review.source)) continue;
+      if ((term.keepOriginal ? '' : term.target.trim()) !== review.current) continue;
+      open.set(term.source, review);
+    }
+
+    return open;
+  }, [dismissed, glossary, reviews]);
+
+  /**
+   * Counted from the findings still open rather than frozen when the pass
+   * finished, so it cannot go on pointing at rows that no longer carry
+   * anything. Which of the two empty cases it is worth saying: a review that
+   * found nothing is a result, and one whose findings have all been answered is
+   * a different result.
+   */
+  const reviewNotice = useMemo(() => {
+    if (!reviewed) return '';
+    if (reviews.length === 0) return '檢查完畢，這批譯名沒有建議要改的。';
+    if (openReviews.size === 0) return `已經處理完這次檢查提出的 ${reviews.length} 個建議。`;
+    return `${openReviews.size} 個譯名建議改掉，已標在下面的詞條上。`;
+  }, [openReviews, reviewed, reviews.length]);
+
+  const takeReview = useCallback(
+    (index: number, suggestion: string) =>
+      dispatch({
+        type: 'glossary.patchTerm',
+        index,
+        // `manual`, because somebody read it and said yes. That is the origin
+        // the precedence rules protect from a later AI pass, and an accepted
+        // suggestion has as much standing as a typed one.
+        patch: { target: suggestion, keepOriginal: false, origin: 'manual' },
+      }),
+    [dispatch],
+  );
+
+  const dismissReview = useCallback(
+    (source: string) => setDismissed((prev) => new Set(prev).add(source)),
+    [],
+  );
 
   const importGlossary = useCallback(
     async (file: File) => {
@@ -666,9 +757,14 @@ export default function App() {
                     conflicts,
                     scriptSlips,
                     unapplied,
+                    reviews: openReviews,
+                    reviewNotice,
                     onSeed: () => dispatch({ type: 'glossary.seed' }),
                     onExtract: runExtract,
                     onDecide: runDecide,
+                    onReview: runReview,
+                    onTakeReview: takeReview,
+                    onDismissReview: dismissReview,
                     onPatch: (index, patch) =>
                       dispatch({ type: 'glossary.patchTerm', index, patch }),
                     onAdd: (source) =>

@@ -8,6 +8,7 @@ import {
   decideTranslations,
   describeError,
   extractTerms,
+  reviewTranslations,
   sectionContext,
   translateCard,
   translateKeywords,
@@ -26,6 +27,7 @@ export interface TaskProgress {
 /** The whole-card passes get fixed slots, since only one of each can run. */
 export const EXTRACT_KEY = 'glossary:extract';
 export const DECIDE_KEY = 'glossary:decide';
+export const REVIEW_KEY = 'glossary:review';
 export const CARD_KEY = 'card';
 
 /**
@@ -171,6 +173,20 @@ export function useTranslate(
     [gate, provider, run, settings.targetLang, step],
   );
 
+  /** Read the decided names back and report the ones that look wrong. */
+  const review = useCallback(
+    (fields: CardFields, terms: GlossaryTerm[]) =>
+      run(REVIEW_KEY, (signal) =>
+        reviewTranslations(provider, fields, terms, {
+          targetLang: settings.targetLang,
+          gate,
+          signal,
+          onProgress: step(REVIEW_KEY),
+        }),
+      ),
+    [gate, provider, run, settings.targetLang, step],
+  );
+
   /**
    * Translate every section. Returns per-section results rather than throwing,
    * so one blocked section cannot discard the rest.
@@ -227,6 +243,7 @@ export function useTranslate(
     translateWholeCard,
     extract,
     decide,
+    review,
     cancel,
     cancelAll,
     busy,

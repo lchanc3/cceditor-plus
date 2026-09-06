@@ -18,6 +18,10 @@
  *   DEADME     401                             (fatal — should stop the run)
  *   SLOWME     a 20s reply                     (for testing cancellation) *   MOJIME     a reply peppered with U+FFFD     (characters the model destroyed)
  *
+ * The glossary passes that work from a numbered term listing — deciding names
+ * and reviewing them — are answered in their own JSON shape, so the whole
+ * seed → decide → review → translate flow can be walked without a real key.
+ *
  * Anything else comes back as a fake translation, so a card with one FILTERME
  * lore entry produces exactly the partial-success case worth looking at.
  *
@@ -148,6 +152,42 @@ const server = createServer(async (req, res) => {
   if (content.includes('SLOWME')) {
     console.log(`slow  ${label}`);
     await wait(20_000);
+  }
+
+  // The listing-based glossary passes want JSON, and a fake translation of the
+  // prompt is not JSON — so without this the mock can exercise everything
+  // except the flow that most needs walking end to end.
+  const listed = [...content.matchAll(/^\d+\. (.+?)（/gm)].map((match) => match[1]);
+
+  if (listed.length > 0 && content.includes('【待決定的詞】')) {
+    console.log(`decide  ${listed.length} term(s)`);
+    send(res, 200, {
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({
+              terms: listed.map((source) => ({ s: source, t: `譯${source}` })),
+            }),
+          },
+          finish_reason: 'stop',
+        },
+      ],
+    });
+    return;
+  }
+
+  if (listed.length > 0 && content.includes('【要審的譯名】')) {
+    // Every third one, so the reply exercises both halves of the pass: the
+    // findings, and the terms it deliberately says nothing about.
+    const issues = listed
+      .filter((_, index) => index % 3 === 0)
+      .map((source) => ({ s: source, t: `改${source}`, why: `${source} 在這張卡裡不是這個意思。` }));
+
+    console.log(`review  ${issues.length} of ${listed.length}`);
+    send(res, 200, {
+      choices: [{ message: { content: JSON.stringify({ issues }) }, finish_reason: 'stop' }],
+    });
+    return;
   }
 
   console.log(`200  ${label}`);

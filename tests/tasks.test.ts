@@ -14,6 +14,7 @@ import {
   createRateGate,
   decideTranslations,
   extractTerms,
+  reviewTranslations,
   sectionContext,
   translateCard,
   translateText,
@@ -531,6 +532,121 @@ describe('decideTranslations', () => {
 
     await decideTranslations(provider, fields, pending, options);
     expect(calls).toHaveLength(2);
+  });
+});
+
+describe('reviewTranslations', () => {
+  const fields = card({
+    name: 'Akane',
+    description: 'The hive answers to Keziah, and her parasites wear the shapes of men.',
+  });
+
+  it('has nothing to review until something has been decided', async () => {
+    const { provider, calls } = fake('{"issues":[]}');
+    const found = await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'hive' }), term({ source: 'parasite' })],
+      options,
+    );
+
+    expect(found).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('leaves locked terms out, which is how a finding is refused for good', async () => {
+    const { provider, calls } = fake('{"issues":[]}');
+    await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'hive', target: '蜂巢', locked: true })],
+      options,
+    );
+
+    expect(calls).toHaveLength(0);
+  });
+
+  it('shows the model what each name says now, and what the card is', async () => {
+    const { provider, calls } = fake('{"issues":[]}');
+    await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'hive', target: '蜂巢' }), term({ source: 'Keziah', keepOriginal: true })],
+      options,
+    );
+
+    const listing = user(calls[0]);
+    expect(listing).toContain('現在的譯名：蜂巢');
+    expect(listing).toContain('現在的譯名：保留原文');
+    // Judging 蜂巢 against 蟲巢 takes knowing what the card is about; the term
+    // and its own translation say nothing either way.
+    expect(listing).toContain('出現於：');
+    expect(system(calls[0])).toContain('角色：Akane');
+    expect(system(calls[0])).toContain('parasites wear the shapes of men');
+  });
+
+  it('reports a name that should not have been kept in the source language', async () => {
+    // A Latin-script name in the middle of Chinese prose breaks immersion, and
+    // this is the case a rule cannot see: the term is decided, spelled right,
+    // and used consistently.
+    const { provider } = fake(
+      '{"issues":[{"s":"Keziah","t":"凱齊亞","why":"RP 中夾著外文名會出戲。"}]}',
+    );
+    const [found] = await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'Keziah', keepOriginal: true })],
+      options,
+    );
+
+    expect(found).toEqual({
+      source: 'Keziah',
+      current: '',
+      suggestion: '凱齊亞',
+      reason: 'RP 中夾著外文名會出戲。',
+    });
+  });
+
+  it('drops a suggestion that is what the term already says', async () => {
+    // Nothing to decide, so presenting it as a finding costs the reader a
+    // decision for nothing — and teaches them to skip the next one.
+    const { provider } = fake('{"issues":[{"s":"hive","t":"蜂巢","why":"看起來不錯。"}]}');
+    const found = await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'hive', target: '蜂巢' })],
+      options,
+    );
+
+    expect(found).toEqual([]);
+  });
+
+  it('drops findings about terms it never asked about, and repeats of one it did', async () => {
+    const { provider } = fake(
+      '{"issues":[{"s":"Invented","t":"憑空","why":"x"},{"s":"hive","t":"蟲巢","why":"這張卡的 hive 不是蜂。"},{"s":"hive","t":"巢穴","why":"y"}]}',
+    );
+    const found = await reviewTranslations(
+      provider,
+      fields,
+      [term({ source: 'hive', target: '蜂巢' })],
+      options,
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0].suggestion).toBe('蟲巢');
+    expect(found[0].current).toBe('蜂巢');
+  });
+
+  it('reviews a whole glossary in a fraction of the requests translating it takes', async () => {
+    const decided = Array.from({ length: 130 }, (_, i) =>
+      term({ source: `Term${i}`, target: `譯${i}` }),
+    );
+    const { provider, calls } = fake('{"issues":[]}');
+
+    await reviewTranslations(provider, fields, decided, options);
+    // Four requests against the thirty-something a card this size costs to
+    // translate, which is what lets an expensive model do the judging.
+    expect(calls).toHaveLength(4);
   });
 });
 

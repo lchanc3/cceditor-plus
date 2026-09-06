@@ -1,8 +1,15 @@
 import { ChevronDown, Download, KeyRound, Lock, Plus, Trash2, Unlock, Upload } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { TermReview } from '../ai';
 import type { GlossaryTerm, ScriptSlip, TermKind, TermUsage, TranslationMeta } from '../glossary';
-import { DECIDE_KEY, EXTRACT_KEY, TaskProgress, TaskStatus } from '../hooks/useTranslate';
+import {
+  DECIDE_KEY,
+  EXTRACT_KEY,
+  REVIEW_KEY,
+  TaskProgress,
+  TaskStatus,
+} from '../hooks/useTranslate';
 import { cn } from '../lib/utils';
 import { Banner, EmptyHint, TranslateButton } from './ui';
 
@@ -31,12 +38,17 @@ export function GlossaryEditor({
   conflicts,
   scriptSlips,
   unapplied,
+  reviews,
+  reviewNotice,
   status,
   errors,
   progress,
   onSeed,
   onExtract,
   onDecide,
+  onReview,
+  onTakeReview,
+  onDismissReview,
   onCancel,
   onPatch,
   onAdd,
@@ -56,12 +68,19 @@ export function GlossaryEditor({
   scriptSlips: ScriptSlip[];
   /** Terms a finished translation did not honour, by term source. */
   unapplied: Set<string>;
+  /** Open findings from the review pass, by term source. */
+  reviews: Map<string, TermReview>;
+  /** What the last review run concluded, including that it found nothing. */
+  reviewNotice: string;
   status: Record<string, TaskStatus>;
   errors: Record<string, string>;
   progress: Record<string, TaskProgress>;
   onSeed: () => void;
   onExtract: () => void;
   onDecide: () => void;
+  onReview: () => void;
+  onTakeReview: (index: number, suggestion: string) => void;
+  onDismissReview: (source: string) => void;
   onCancel: (key: string) => void;
   onPatch: (index: number, patch: Partial<GlossaryTerm>) => void;
   onAdd: (source: string) => void;
@@ -88,6 +107,18 @@ export function GlossaryEditor({
   );
   const decided = terms.length - undecided;
 
+  /**
+   * What the review pass would actually look at. Locked terms are left out
+   * because the pass skips them — which is also how somebody stops being asked
+   * about a finding they disagree with.
+   */
+  const reviewable = useMemo(
+    () =>
+      terms.filter((term) => !term.locked && (term.keepOriginal || term.target.trim() !== ''))
+        .length,
+    [terms],
+  );
+
   // Filtering keeps the original index, because that is what every action takes.
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -108,15 +139,17 @@ export function GlossaryEditor({
   /**
    * How badly a term wants looking at. 0 is undecided — it contributes nothing
    * to a translation until somebody settles it. 1 is decided but questioned by
-   * one of the checks. 2 is everything else.
+   * one of the checks, or by the review pass. 2 is everything else.
    */
   const attentionOf = useCallback(
     (term: GlossaryTerm): 0 | 1 | 2 => {
       if (!term.keepOriginal && term.target.trim() === '') return 0;
-      if (slipped.has(term.source) || unapplied.has(term.source)) return 1;
+      if (reviews.has(term.source) || slipped.has(term.source) || unapplied.has(term.source)) {
+        return 1;
+      }
       return 2;
     },
-    [slipped, unapplied],
+    [reviews, slipped, unapplied],
   );
 
   /**
@@ -194,8 +227,22 @@ export function GlossaryEditor({
             label="AI 決定譯名"
             disabled={undecided === 0}
           />
-          <Progress progress={progress[EXTRACT_KEY] ?? progress[DECIDE_KEY]} />
+          <TranslateButton
+            status={status[REVIEW_KEY]}
+            onTranslate={onReview}
+            onCancel={() => onCancel(REVIEW_KEY)}
+            label="AI 檢查譯名"
+            disabled={reviewable === 0}
+          />
+          <Progress
+            progress={progress[EXTRACT_KEY] ?? progress[DECIDE_KEY] ?? progress[REVIEW_KEY]}
+          />
         </div>
+
+        <p className="text-xs leading-relaxed text-dim">
+          {reviewNotice ||
+            '「檢查譯名」會把已決定的譯名連同它在卡片裡的上下文送給 AI，請它挑出指錯東西或會被讀錯的譯名——簡體字與重複那類規則抓得到的，上面的提示已經在管。建議一條條給，採不採用都可以；鎖起來的詞不會被檢查。'}
+        </p>
 
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={onApplyKeys} disabled={decided === 0} className="btn-quiet">
@@ -210,7 +257,7 @@ export function GlossaryEditor({
         </p>
       </header>
 
-      {[EXTRACT_KEY, DECIDE_KEY].map(
+      {[EXTRACT_KEY, DECIDE_KEY, REVIEW_KEY].map(
         (key) => errors[key] && <Banner key={key} tone="error">{errors[key]}</Banner>,
       )}
 
@@ -306,9 +353,12 @@ export function GlossaryEditor({
                   total={total}
                   unapplied={unapplied.has(term.source)}
                   slipped={slipped.has(term.source)}
+                  review={reviews.get(term.source)}
                   attention={attentionOf(term)}
                   onPatch={(patch) => onPatch(index, patch)}
                   onRemove={() => onRemove(index)}
+                  onTakeReview={(suggestion) => onTakeReview(index, suggestion)}
+                  onDismissReview={() => onDismissReview(term.source)}
                   onJump={onJump}
                 />
               ))}
@@ -379,9 +429,12 @@ function TermRow({
   total,
   unapplied,
   slipped,
+  review,
   attention,
   onPatch,
   onRemove,
+  onTakeReview,
+  onDismissReview,
   onJump,
 }: {
   term: GlossaryTerm;
@@ -390,10 +443,14 @@ function TermRow({
   unapplied: boolean;
   /** The translation contains a simplified character. */
   slipped: boolean;
+  /** What the review pass said about this name, while it still applies. */
+  review: TermReview | undefined;
   /** 0 undecided, 1 questioned, 2 fine — what the row is tinted by. */
   attention: 0 | 1 | 2;
   onPatch: (patch: Partial<GlossaryTerm>) => void;
   onRemove: () => void;
+  onTakeReview: (suggestion: string) => void;
+  onDismissReview: () => void;
   onJump: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -459,6 +516,33 @@ function TermRow({
           </span>
         )}
       </div>
+
+      {/*
+        Shown in the row rather than collected into a list at the top: taking a
+        suggestion means changing this term's translation, and a finding parked
+        somewhere else would make the reader find the row first. The ranking
+        already floats the questioned rows up here.
+      */}
+      {review && (
+        <div className="mt-2.5 rounded border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs">
+          <p className="text-body">
+            {review.current === '' ? '這個詞現在保留原文，建議譯成 ' : '建議改成 '}
+            <span className="text-gold">{review.suggestion}</span>
+          </p>
+          {review.reason && <p className="mt-1 leading-relaxed text-dim">{review.reason}</p>}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button onClick={() => onTakeReview(review.suggestion)} className="btn-quiet">
+              採用
+            </button>
+            {/* No `title` here: it shadows the visible label as the button's
+                accessible name, and what it would have said — that locking is
+                what silences a finding for good — the header already says. */}
+            <button onClick={onDismissReview} className="btn-quiet">
+              忽略
+            </button>
+          </div>
+        </div>
+      )}
 
       {open && (
         <div className="mt-3 space-y-3 border-t border-line pt-3">

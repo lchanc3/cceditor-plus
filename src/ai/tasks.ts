@@ -407,6 +407,8 @@ ${valid.join(', ')}`,
 /** About a page of text per request: enough context to judge, cheap enough to repeat. */
 const EXTRACT_BATCH_CHARS = 4000;
 const DECIDE_BATCH_TERMS = 40;
+/** Reviewing carries one more line per term than naming does, but not enough more to split further. */
+const REVIEW_BATCH_TERMS = 40;
 /** Characters of surrounding text shown when asking for a translation. */
 const SNIPPET_WIDTH = 70;
 
@@ -664,6 +666,30 @@ function batchTerms(families: GlossaryTerm[][], limit: number): GlossaryTerm[][]
 }
 
 /**
+ * One term as the model sees it: what it is, which entry it keys, and the first
+ * place it appears. Shared by the two passes that work from a numbered list, so
+ * a term cannot be described one way when it is named and another when its name
+ * is reviewed.
+ */
+function describeTerm(
+  term: GlossaryTerm,
+  position: number,
+  sections: CardSection[],
+  titles: Map<string, string>,
+  withCurrent = false,
+): string {
+  const snippet = snippetFor(sections, term.source);
+  const title = titles.get(fold(term.source));
+
+  return [
+    `${position}. ${term.source}（${term.kind}）`,
+    withCurrent ? `｜現在的譯名：${term.keepOriginal ? '保留原文' : term.target.trim()}` : '',
+    title ? `｜世界書條目：${title}` : '',
+    snippet ? `｜出現於：${snippet}` : '',
+  ].join('');
+}
+
+/**
  * Settle on a translation for every term that does not have one.
  *
  * Terms somebody already decided are sent as a "must reuse" list rather than
@@ -694,15 +720,7 @@ export async function decideTranslations(
     options.signal?.throwIfAborted();
 
     const listing = batch
-      .map((term, i) => {
-        const snippet = snippetFor(sections, term.source);
-        const title = titles.get(fold(term.source));
-        return [
-          `${i + 1}. ${term.source}（${term.kind}）`,
-          title ? `｜世界書條目：${title}` : '',
-          snippet ? `｜出現於：${snippet}` : '',
-        ].join('');
-      })
+      .map((term, i) => describeTerm(term, i + 1, sections, titles))
       .join('\n');
 
     const items = await chatJson<RawTerm>(
@@ -739,6 +757,146 @@ export async function decideTranslations(
   }
 
   return decisions;
+}
+
+/**
+ * One translated name the review thinks is wrong.
+ *
+ * `current` is what the term said when it was reviewed, and it is what makes a
+ * finding disposable: the moment somebody takes the suggestion, retypes the
+ * name, or decides it differently, the finding no longer describes anything and
+ * the viewer can drop it without having to ask again.
+ */
+export interface TermReview {
+  source: string;
+  /** The translation as reviewed. Empty when the term is kept in the source language. */
+  current: string;
+  suggestion: string;
+  /** One line on why the current name does not work. */
+  reason: string;
+}
+
+interface RawIssue {
+  s?: unknown;
+  t?: unknown;
+  why?: unknown;
+}
+
+/**
+ * The bar a finding has to clear.
+ *
+ * Deliberately asymmetric: the model is asked for the names that are wrong, not
+ * for a verdict on every name. A verdict per term would spend most of its output
+ * on the nine in ten that are fine, and a list padded with "這個沒問題" is a list
+ * nobody reads to the end. The cost of that choice is that a model asked for
+ * problems will find some, so the prompt spends its length on what does *not*
+ * count — the same constraint `checks.ts` states, for the same reason: one
+ * needless suggestion teaches the reader to skip the next one.
+ *
+ * Rule 4 is a preference, not a fact about translation: a Latin-script name in
+ * the middle of Chinese prose breaks immersion in roleplay, which is what these
+ * cards are for. It is also where a real run went wrong — `keziah` kept in the
+ * source language while `keziah's domain` became 凱齊亞的領域.
+ */
+const reviewPrompt = (targetLang: string, card: CardContext): string =>
+  `你是一位資深的角色卡翻譯審稿。有人已經為這張卡的專有名詞決定了譯名，請你挑出其中真的該改的。目標語言是${targetLang}。
+
+【該改的】
+1. 譯名指向錯的東西——把設定裡的生物、組織、地點或概念，套成它在現實世界最常見的意思。
+2. 譯名在中文裡會被讀成別的意思，或讀起來不像一個詞。
+3. 同一個詞族前後不一致——詞根與它的複合詞用了不同的處理方式。
+4. 人名、地名之類的專有名詞被標為「保留原文」。中文角色卡裡夾著外文名會讓讀者出戲，除非它本來就是縮寫或代號，否則應該音譯。
+
+【不該改的】
+- 只是換個說法、更文雅、或更貼近字面。譯名沒有唯一解，讀得通就不要動它。
+- 同一個意思的不同寫法。
+- 你沒把握的。寧可漏掉也不要硬提——每一條沒必要的建議，都會讓人更不想看這份清單。
+
+【規則】
+1. s 必須與清單中的原文完全一致。
+2. t 是建議的新譯名，必須與現在的譯名不同。
+3. why 用一句話說明現在這個為什麼不行。
+4. 清單裡沒有一個該改時，回傳 {"issues":[]}。這是常見的結果，不是失敗。${contextBlock(card)}
+
+【輸出格式】只輸出 JSON，不要有任何說明文字：
+{"issues":[{"s":"原文詞","t":"建議譯名","why":"一句話理由"}]}`;
+
+/**
+ * Read the decided names back and say which ones are wrong.
+ *
+ * This is the layer the deterministic checks cannot reach. `simplifiedTargets`
+ * can see a wrong character and `duplicateTargets` can see a collision, but no
+ * rule can see that `parasite → 寄生蟲` should be 寄生體 on a card whose parasites
+ * are not insects, or that `hive → 蜂巢` should be 蟲巢. That needs a reader who
+ * knows what the card is about, which is what the background block and the
+ * snippets are for.
+ *
+ * It is cheap where it counts: a 130-term card is four requests here against
+ * thirty-six for the translation itself, so the judging can be given to a model
+ * too expensive to write the whole card with.
+ *
+ * Nothing is written. The result is a list of findings for the viewer to offer,
+ * one at a time, to somebody who can tell whether the model has a point.
+ * Locked terms are skipped — locking already means "this one is settled", so it
+ * doubles as the way to stop being asked about a finding you disagree with.
+ */
+export async function reviewTranslations(
+  provider: Provider,
+  fields: CardFields,
+  terms: GlossaryTerm[],
+  options: TranslateOptions & { onProgress?: ProgressFn },
+): Promise<TermReview[]> {
+  const decided = terms.filter((term) => !term.locked && isDecided(term));
+  if (decided.length === 0) return [];
+
+  const sections = cardSections(fields);
+  const titles = entryTitles(fields);
+  const bySource = new Map(decided.map((term) => [fold(term.source), term]));
+  // Built here rather than taken from the caller, so a caller cannot forget it
+  // and leave the reviewer judging names with no idea what the card is.
+  const card = options.card ?? cardContext(fields);
+
+  const batches = batchTerms(relatedFamilies(decided), REVIEW_BATCH_TERMS);
+
+  const found: TermReview[] = [];
+  const seen = new Set<string>();
+
+  for (const [index, batch] of batches.entries()) {
+    options.signal?.throwIfAborted();
+
+    const listing = batch
+      .map((term, i) => describeTerm(term, i + 1, sections, titles, true))
+      .join('\n');
+
+    const items = await chatJson<RawIssue>(
+      provider,
+      [
+        { role: 'system', content: reviewPrompt(options.targetLang, card) },
+        { role: 'user', content: `【要審的譯名】\n${listing}` },
+      ],
+      options,
+      'issues',
+      '檢查譯名',
+    );
+
+    for (const item of items) {
+      const term = bySource.get(fold(asText(item.s)));
+      if (!term || seen.has(fold(term.source))) continue;
+
+      const suggestion = asText(item.t);
+      const current = term.keepOriginal ? '' : term.target.trim();
+      // A suggestion that is what the term already says is not a finding, and
+      // presenting it as one costs the reader a decision for nothing.
+      if (suggestion === '' || fold(suggestion) === fold(current)) continue;
+
+      seen.add(fold(term.source));
+      found.push({ source: term.source, current, suggestion, reason: asText(item.why) });
+    }
+
+    options.onProgress?.(index + 1, batches.length);
+  }
+
+  return found;
 }
 
 /**
