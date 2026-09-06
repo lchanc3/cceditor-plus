@@ -216,7 +216,7 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  console.log(`200  ${label}`);
+  console.log(`200  ${content.includes('【術語表') ? '[pinned] ' : ''}${label}`);
   send(res, 200, {
     choices: [{ message: { content: fakeTranslation(content) }, finish_reason: 'stop' }],
   });

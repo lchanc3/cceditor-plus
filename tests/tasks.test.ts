@@ -540,16 +540,34 @@ describe('translateLoreKeys', () => {
   const answer = (pairs: [number, string][]) =>
     JSON.stringify({ keys: pairs.map(([i, t]) => ({ i, t })) });
 
+  const named = (terms: GlossaryTerm[]) =>
+    Object.fromEntries(terms.map((term) => [term.source, term.target]));
+
   it('asks by number and answers by number', async () => {
     const { provider, calls } = fake(answer([[1, '蘋果'], [2, '樹']]));
     const found = await translateLoreKeys(provider, ['apple', 'tree'], options);
 
     expect(user(calls[0])).toContain('1. apple');
     expect(user(calls[0])).toContain('2. tree');
-    expect([...found]).toEqual([
-      ['apple', '蘋果'],
-      ['tree', '樹'],
-    ]);
+    expect(named(found)).toEqual({ apple: '蘋果', tree: '樹' });
+  });
+
+  it('hands them back as glossary terms, to settle before anything is translated', async () => {
+    // The shape is the point: named first and merged, one decision reaches both
+    // the prose — through the pinned glossary — and the entry's keys. A key
+    // translated on its own afterwards agrees with the prose only by luck.
+    const { provider } = fake(answer([[1, '咖啡廳']]));
+    const [term] = await translateLoreKeys(provider, ['coffee shop'], options);
+
+    expect(term).toEqual({
+      source: 'coffee shop',
+      target: '咖啡廳',
+      aliases: [],
+      kind: 'other',
+      origin: 'ai',
+      locked: false,
+      keepOriginal: false,
+    });
   });
 
   it('gives a dropped key nothing rather than giving it the next key’s answer', async () => {
@@ -559,9 +577,7 @@ describe('translateLoreKeys', () => {
     const { provider } = fake(answer([[1, '蜂巢'], [3, '寄生體']]));
     const found = await translateLoreKeys(provider, ['hive', 'nest', 'parasite'], options);
 
-    expect(found.get('hive')).toBe('蜂巢');
-    expect(found.has('nest')).toBe(false);
-    expect(found.get('parasite')).toBe('寄生體');
+    expect(named(found)).toEqual({ hive: '蜂巢', parasite: '寄生體' });
   });
 
   it('takes a whole card of keys in one request', async () => {
@@ -574,14 +590,37 @@ describe('translateLoreKeys', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('splits a lorebook too big for one request', async () => {
+  it('splits a lorebook too big for one request, and does not let the halves drift', async () => {
     const keys = Array.from({ length: 130 }, (_, i) => `key${i}`);
-    const { provider, calls } = fake('{"keys":[]}');
+    const { provider, calls } = fake(answer([[1, '譯一']]), '{"keys":[]}');
 
     await translateLoreKeys(provider, keys, options);
+
     expect(calls).toHaveLength(3);
     // Numbering restarts per request, or the second batch answers about the first.
     expect(user(calls[1])).toContain('1. key60');
+    // And what the first batch settled is carried into the second, the same way
+    // `decideTranslations` stops a long glossary drifting between requests.
+    expect(system(calls[1])).toContain('key0 => 譯一');
+  });
+
+  it('carries what the glossary already decided, so a key cannot contradict the prose', async () => {
+    const { provider, calls } = fake('{"keys":[]}');
+    await translateLoreKeys(provider, ['cafe'], {
+      ...options,
+      glossary: [
+        term({ source: 'coffee shop', target: '咖啡廳' }),
+        term({ source: 'Kaelen', keepOriginal: true }),
+        term({ source: 'Emberwright' }),
+      ],
+    });
+
+    const prompt = system(calls[0]);
+    expect(prompt).toContain('coffee shop => 咖啡廳');
+    // Nothing undecided, and nothing kept in the source language: neither says
+    // what this pass should write.
+    expect(prompt).not.toContain('Kaelen');
+    expect(prompt).not.toContain('Emberwright');
   });
 
   it('asks once about spellings that fold together', async () => {
@@ -590,14 +629,13 @@ describe('translateLoreKeys', () => {
 
     const listed = user(calls[0]).split('\n').filter((line) => /^\d+\. /.test(line));
     expect(listed).toHaveLength(1);
-    // And the one answer serves all three, since they are looked up folded.
-    expect(found.get('hive')).toBe('蜂巢');
+    // One answer serves all three: the keys are looked up folded when applied.
+    expect(named(found)).toEqual({ hive: '蜂巢' });
   });
 
   it('ignores an answer to a number nobody asked about', async () => {
     const { provider } = fake(answer([[9, '憑空'], [1, '蜂巢']]));
-    const found = await translateLoreKeys(provider, ['hive'], options);
-    expect([...found]).toEqual([['hive', '蜂巢']]);
+    expect(named(await translateLoreKeys(provider, ['hive'], options))).toEqual({ hive: '蜂巢' });
   });
 
   it('drops an answer that is an explanation rather than a key', async () => {
@@ -607,20 +645,18 @@ describe('translateLoreKeys', () => {
         [2, '巢穴\n（附註）'],
       ]),
     );
-    const found = await translateLoreKeys(provider, ['hive', 'nest'], options);
-    expect(found.size).toBe(0);
+    expect(await translateLoreKeys(provider, ['hive', 'nest'], options)).toEqual([]);
   });
 
   it('drops an answer that is the key handed back', async () => {
     // The original is already on the entry, so an echo only adds a repeat.
     const { provider } = fake(answer([[1, 'hive'], [2, 'NEST']]));
-    const found = await translateLoreKeys(provider, ['hive', 'nest'], options);
-    expect(found.size).toBe(0);
+    expect(await translateLoreKeys(provider, ['hive', 'nest'], options)).toEqual([]);
   });
 
   it('sends nothing when there is nothing to ask about', async () => {
     const { provider, calls } = fake('{"keys":[]}');
-    expect((await translateLoreKeys(provider, ['  ', ''], options)).size).toBe(0);
+    expect(await translateLoreKeys(provider, ['  ', ''], options)).toEqual([]);
     expect(calls).toHaveLength(0);
   });
 });

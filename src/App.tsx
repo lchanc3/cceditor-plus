@@ -11,6 +11,7 @@ import {
   suggestFilename,
 } from './card';
 import {
+  GlossaryTerm,
   TranslationIssue,
   cardSections,
   checkTranslation,
@@ -20,6 +21,7 @@ import {
   encodeTranslationMeta,
   glossaryReadiness,
   keysWithoutTerms,
+  mergeTerms,
   scanUsage,
   simplifiedTargets,
   termsInText,
@@ -44,9 +46,6 @@ import { CARD_KEY, useTranslate } from './hooks/useTranslate';
 import { clearDraft, loadDraft, saveDraft } from './lib/draft';
 import { downloadText } from './lib/download';
 import { useCardStore } from './state/cardStore';
-
-/** Shared empty result, so a card with nothing to look up allocates nothing. */
-const EMPTY_KEYS: ReadonlyMap<string, string> = new Map();
 
 /** Shown in the footer to satisfy AGPL-3.0 section 13. */
 const SOURCE_URL = 'https://github.com/lchanc3/cceditor-plus';
@@ -295,51 +294,42 @@ export default function App() {
   );
 
   /**
-   * The keys to add to one lorebook entry.
+   * Settle the lorebook keys the glossary cannot answer, before anything is
+   * translated, and hand back the glossary to translate with.
    *
-   * Keywords are appended, never replaced: the original terms still have to
-   * match for anyone reading the card in its own language.
+   * The order is the whole point. A key named on its own *after* the prose is
+   * translated guarantees nothing: the prose may well have rendered the same
+   * word another way, and then the entry never fires — which is the failure the
+   * glossary exists to prevent. Named first, the one decision is pinned into
+   * every section's prompt and appended to the keys, from a single source.
    *
-   * The glossary answers first, because a key translated on its own may not be
-   * the name the reader actually sees in the text, and then the entry never
-   * fires. What is left over is a key the glossary has no term for at all —
-   * never one it deliberately kept in the source language.
-   *
-   * Those leftovers are looked up in a map fetched for the whole card at once,
-   * rather than asked about here: a card set in the real world has no invented
-   * names to settle, so an empty glossary is its normal state rather than a
-   * degraded one, and every entry paying for its own round trip is what made
-   * that card slow.
+   * A card set in the real world has no invented names to settle, so an empty
+   * glossary is its normal state rather than a degraded one. This is how those
+   * cards get a glossary at all, and it costs one request: the names land in
+   * the 詞彙 tab where they can be read, edited and reviewed like any other.
    */
-  const addedKeysFor = useCallback(
-    (keys: string[], translated: ReadonlyMap<string, string>): string[] => {
-      if (keys.length === 0) return [];
-
+  const settleLoreKeys = useCallback(
+    async (entries: LorebookEntry[]): Promise<{ terms: GlossaryTerm[]; failed: boolean }> => {
       const terms = state.glossary.glossary;
-      const added = translatedKeysFor(keys, terms);
-
-      for (const orphan of keysWithoutTerms(keys, terms)) {
-        const word = translated.get(orphan.toLowerCase());
-        if (word) added.push(word);
-      }
-
-      // Repeats are dropped where the keys are written, which is the one place
-      // every path goes through — see `appendKeys`.
-      return added;
-    },
-    [state.glossary.glossary],
-  );
-
-  /** Every key on these entries that the glossary cannot answer for. */
-  const orphanKeysOf = useCallback(
-    (entries: LorebookEntry[]): string[] => {
-      const terms = state.glossary.glossary;
-      return entries.flatMap((entry) => [
+      const orphans = entries.flatMap((entry) => [
         ...keysWithoutTerms(entry.keys, terms),
         ...keysWithoutTerms(entry.secondary_keys ?? [], terms),
       ]);
+      if (orphans.length === 0) return { terms, failed: false };
+
+      const named = await translate.translateKeys(CARD_KEY, orphans);
+      // A failure leaves the glossary as it was. The run still goes ahead —
+      // nineteen translated sections are worth more than a perfect lorebook —
+      // but the report has to say so, since those entries will end up with
+      // source-language keys on a translated card.
+      if (!named) return { terms, failed: true };
+
+      dispatch({ type: 'glossary.merge', terms: named });
+      // Merged locally too: the dispatch above does not reach this closure
+      // until the next render, and the run starts before that.
+      return { terms: mergeTerms(terms, named), failed: false };
     },
-    [state.glossary.glossary],
+    [dispatch, state.glossary.glossary, translate],
   );
 
   const translateLoreEntry = useCallback(
@@ -348,15 +338,17 @@ export default function App() {
       if (!entry) return;
 
       const key = `lore:${index}`;
-      const content = await translate.translate(key, entry.content);
+
+      // Names first, then the text, then the keys — the same order the
+      // whole-card run uses, so this entry's key and its prose come from one
+      // decision rather than from two independent translations.
+      const { terms } = await settleLoreKeys([entry]);
+
+      const content = await translate.translate(key, entry.content, terms);
       if (content === null) return;
 
-      const orphans = orphanKeysOf([entry]);
-      const translated =
-        orphans.length > 0 ? ((await translate.translateKeys(key, orphans)) ?? EMPTY_KEYS) : EMPTY_KEYS;
-
-      const keys = addedKeysFor(entry.keys, translated);
-      const secondary = addedKeysFor(entry.secondary_keys ?? [], translated);
+      const keys = translatedKeysFor(entry.keys, terms);
+      const secondary = translatedKeysFor(entry.secondary_keys ?? [], terms);
 
       // Written through the same action the whole-card run uses, so both paths
       // get one set of rules about what may be appended and what is a repeat.
@@ -367,7 +359,7 @@ export default function App() {
       }
       settle(key, entry.content, content);
     },
-    [addedKeysFor, dispatch, model, orphanKeysOf, settle, translate],
+    [dispatch, model, settle, settleLoreKeys, translate],
   );
 
   const translateWholeCard = useCallback(
@@ -379,8 +371,13 @@ export default function App() {
       // destroys the source the checks need.
       const before = new Map(cardSections(model.fields).map((s) => [s.path, s.text]));
       const entries = model.fields.character_book?.entries ?? [];
+      const inScope = entries.filter((_, index) => only.includes(`lore:${index}`));
 
-      const results = await translate.translateWholeCard(model.fields, only);
+      // Before a word is translated, so the names reach the prose as well as
+      // the keys.
+      const { terms, failed } = await settleLoreKeys(inScope);
+
+      const results = await translate.translateWholeCard(model.fields, only, terms);
       if (!results) return;
 
       const issues: Record<string, TranslationIssue[]> = {};
@@ -410,39 +407,27 @@ export default function App() {
        * A section the run never reached is left alone. Nothing on that card has
        * been translated, so there is no language for a key to be wrong in yet.
        */
-      const keyed = results.flatMap((result) => {
+      for (const result of results) {
         const lore = /^lore:(\d+)$/.exec(result.path);
         const reached = result.text !== undefined || result.filtered || result.transient;
-        if (!lore || !reached) return [];
+        if (!lore || !reached) continue;
 
         const index = Number(lore[1]);
         const entry = entries[index];
-        return entry ? [{ index, entry }] : [];
-      });
+        if (!entry) continue;
 
-      // One request for the card's whole lorebook rather than two for each
-      // entry, which is what makes this bearable on a card that has no glossary
-      // to answer from — a real-world setting with no invented names to settle.
-      const orphans = orphanKeysOf(keyed.map(({ entry }) => entry));
-      const translated =
-        orphans.length > 0 ? await translate.translateKeys(CARD_KEY, orphans) : EMPTY_KEYS;
-
-      for (const { index, entry } of keyed) {
-        const keys = addedKeysFor(entry.keys, translated ?? EMPTY_KEYS);
+        const keys = translatedKeysFor(entry.keys, terms);
         if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
 
-        const secondary = addedKeysFor(entry.secondary_keys ?? [], translated ?? EMPTY_KEYS);
+        const secondary = translatedKeysFor(entry.secondary_keys ?? [], terms);
         if (secondary.length > 0) {
           dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
         }
       }
 
-      // `null` means the key request itself failed, and those entries are now
-      // carrying source-language keys on a translated card — the exact state
-      // this whole path exists to prevent, so it is not left unsaid.
-      setReport({ results, issues, keysFailed: translated === null });
+      setReport({ results, issues, keysFailed: failed });
     },
-    [addedKeysFor, checkApplied, dispatch, inspect, model, translate],
+    [checkApplied, dispatch, inspect, model, settleLoreKeys, translate],
   );
 
   // ---- glossary ----------------------------------------------------------

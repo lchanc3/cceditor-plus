@@ -111,12 +111,12 @@ export function useTranslate(
   );
 
   const translate = useCallback(
-    (key: string, content: string) =>
+    (key: string, content: string, glossary?: GlossaryTerm[]) =>
       run(key, (signal) =>
         translateText(provider, content, {
           targetLang: settings.targetLang,
           temperature: settings.temperature,
-          glossary: meta.glossary,
+          glossary: glossary ?? meta.glossary,
           styleNotes: meta.styleNotes,
           ...(fields
             ? { card: cardContext(fields, key), section: sectionContext(fields, key) }
@@ -138,17 +138,23 @@ export function useTranslate(
   );
 
   /**
-   * Translations for lorebook keys, for the whole card in one go.
+   * Names for a card's lorebook keys, in one go.
    *
-   * Keyed by the source key folded to lower case, so a caller looks up what it
-   * asked about rather than counting its way through a list.
+   * Returns glossary terms for the caller to merge, because the whole point is
+   * to settle these *before* the prose is translated: the same decision then
+   * reaches the text, through the pinned glossary, and the keys.
    */
   const translateKeys = useCallback(
     (key: string, keys: string[]) =>
       run(key, (signal) =>
-        translateLoreKeys(provider, keys, { targetLang: settings.targetLang, gate, signal }),
+        translateLoreKeys(provider, keys, {
+          targetLang: settings.targetLang,
+          glossary: meta.glossary,
+          gate,
+          signal,
+        }),
       ),
-    [gate, provider, run, settings.targetLang],
+    [gate, meta.glossary, provider, run, settings.targetLang],
   );
 
   /** Propose the proper nouns the lorebook keys did not already cover. */
@@ -198,12 +204,15 @@ export function useTranslate(
    * so one blocked section cannot discard the rest.
    */
   const translateWholeCard = useCallback(
-    (fields: CardFields, only?: string[]) =>
+    // `glossary` overrides the hook's copy, for terms settled inside the same
+    // call that starts the run — this closure cannot see a dispatch that has
+    // not rendered yet.
+    (fields: CardFields, only?: string[], glossary?: GlossaryTerm[]) =>
       run(CARD_KEY, (signal) =>
         translateCard(provider, fields, {
           targetLang: settings.targetLang,
           temperature: settings.temperature,
-          glossary: meta.glossary,
+          glossary: glossary ?? meta.glossary,
           styleNotes: meta.styleNotes,
           gate,
           signal,

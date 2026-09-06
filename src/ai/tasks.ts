@@ -386,7 +386,25 @@ interface RawKey {
   t?: unknown;
 }
 
-const keysPrompt = (targetLang: string): string =>
+/**
+ * The names already settled, which this pass may not contradict.
+ *
+ * Two reasons it is here. A card over sixty keys goes out in more than one
+ * request, and the second one is blind to the first unless it is told — the
+ * same drift `decideTranslations` carries a "must reuse" list to prevent. And
+ * the glossary may already hold decisions from a naming pass or from somebody's
+ * own typing; a key that is also a term must not come back rendered a second
+ * way, or the entry stops matching the prose that pins the term.
+ */
+const settledBlock = (settled: [string, string][]): string =>
+  settled.length === 0
+    ? ''
+    : `
+
+【已決定的譯名 — 必須沿用，不可改譯】
+${settled.map(([source, target]) => `${source} => ${target}`).join('\n')}`;
+
+const keysPrompt = (targetLang: string, settled: [string, string][]): string =>
   `你是一位協助翻譯角色卡的術語整理員。請把以下世界書關鍵字翻譯成${targetLang}。
 
 【這些字的用途】它們是拿去比對讀者輸入的文字，不是拿來閱讀的句子。
@@ -396,42 +414,34 @@ const keysPrompt = (targetLang: string): string =>
 2. 同一個意思的不同寫法給同一個譯名（7 yo、7 year-old、age: 7 都是七歲）。
 3. 人名、地名等專有名詞照譯；不適合意譯的用音譯。
 4. 不確定怎麼翻的那一筆整個不要輸出——不要給空字串，也不要把原文抄回來。
-5. i 必須是清單上的編號，t 是那個編號的譯名。
+5. i 必須是清單上的編號，t 是那個編號的譯名。${settledBlock(settled)}
 
 【輸出格式】只輸出 JSON，不要有任何說明文字：
 {"keys":[{"i":1,"t":"譯名"}]}`;
 
 /**
- * Translations for lorebook keys the glossary has no term for.
+ * Names for lorebook keys the glossary has no term for.
  *
- * Prefer `translatedKeysFor`: a key translated apart from the entry's text may
- * not match the name the reader actually sees, and then the entry never fires.
- * This is for the keys that never made it into a glossary — which is not only
- * the degraded case. A card set in the real world has no invented names to
- * settle, so its glossary is legitimately empty and this is the whole of its
- * lorebook key handling.
+ * Returned as glossary terms rather than written anywhere, so the caller folds
+ * them in with `mergeTerms` and the precedence rules still apply. That is the
+ * point of the shape: run this *before* translating and the same decision
+ * reaches the prose, through the pinned glossary block, and the entry's keys.
+ * Translating a key on its own afterwards guarantees nothing — the prose may
+ * well have rendered it another way, and then the entry never fires.
  *
- * Numbered rather than positional, and answered by number.
+ * Numbered rather than positional, and answered by number. Matched up by
+ * position, a model that drops one key and merges two others returns a list of
+ * exactly the right length with every answer after the seam attached to the
+ * wrong word, and a lorebook full of confidently wrong triggers looks exactly
+ * like a working one. By number, a dropped key costs that key alone.
  *
- * The previous version asked for a comma-separated line and matched the reply
- * up by position, which is safe for the three keys one entry carries and not
- * safe at all for the sixty a card carries: a model that drops one key and
- * merges two others returns a list of exactly the right length with every
- * answer after the seam attached to the wrong word. Numbering removes the
- * failure mode rather than detecting it — a dropped key costs that key alone,
- * and nothing can be silently misattributed.
- *
- * Which is what lets the whole card go in one request instead of two per entry.
- * A twenty-entry card was forty round trips, run after the report already said
- * the translation had finished.
+ * Which is what lets a whole card go in one request. It was two per entry.
  */
 export async function translateLoreKeys(
   provider: Provider,
   keys: string[],
   options: TranslateOptions & { onProgress?: ProgressFn },
-): Promise<Map<string, string>> {
-  const found = new Map<string, string>();
-
+): Promise<GlossaryTerm[]> {
   const wanted: string[] = [];
   const seen = new Set<string>();
   for (const key of keys) {
@@ -442,12 +452,20 @@ export async function translateLoreKeys(
     seen.add(fold(trimmed));
     wanted.push(trimmed);
   }
-  if (wanted.length === 0) return found;
+  if (wanted.length === 0) return [];
+
+  // Whatever the glossary has already settled leads the reuse list, so this
+  // pass agrees with the terms that are pinned into the prose.
+  const settled: [string, string][] = (options.glossary ?? [])
+    .filter((term) => !term.keepOriginal && term.target.trim() !== '')
+    .map((term) => [term.source, term.target.trim()]);
 
   const batches: string[][] = [];
   for (let at = 0; at < wanted.length; at += KEYS_BATCH) {
     batches.push(wanted.slice(at, at + KEYS_BATCH));
   }
+
+  const named: GlossaryTerm[] = [];
 
   for (const [index, batch] of batches.entries()) {
     options.signal?.throwIfAborted();
@@ -455,7 +473,7 @@ export async function translateLoreKeys(
     const items = await chatJson<RawKey>(
       provider,
       [
-        { role: 'system', content: keysPrompt(options.targetLang) },
+        { role: 'system', content: keysPrompt(options.targetLang, settled) },
         {
           role: 'user',
           content: `【待翻譯關鍵字】\n${batch.map((key, i) => `${i + 1}. ${key}`).join('\n')}`,
@@ -469,19 +487,28 @@ export async function translateLoreKeys(
     for (const item of items) {
       const at = Number(item.i) - 1;
       const source = Number.isInteger(at) ? batch[at] : undefined;
-      const translated = asText(item.t);
+      const target = asText(item.t);
 
-      if (source === undefined || translated === '' || looksLikeProse(translated)) continue;
+      if (source === undefined || target === '' || looksLikeProse(target)) continue;
       // An echo of the key adds nothing; the original is already on the entry.
-      if (fold(translated) === fold(source)) continue;
+      if (fold(target) === fold(source)) continue;
 
-      found.set(fold(source), translated);
+      settled.push([source, target]);
+      named.push({
+        source,
+        target,
+        aliases: [],
+        kind: 'other',
+        origin: 'ai',
+        locked: false,
+        keepOriginal: false,
+      });
     }
 
     options.onProgress?.(index + 1, batches.length);
   }
 
-  return found;
+  return named;
 }
 
 // ---------------------------------------------------------------------------
