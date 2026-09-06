@@ -29,6 +29,10 @@ export interface TermUsage {
 
 const PLAIN_FIELDS = [
   { key: 'name', label: '名稱' },
+  // Seeded as a term since the beginning, but never a section — so it could
+  // never be translated, and the term it seeded reported zero occurrences
+  // forever because the only place it appears was not being read.
+  { key: 'nickname', label: '暱稱' },
   { key: 'description', label: '角色描述' },
   { key: 'personality', label: '性格設定' },
   { key: 'scenario', label: '場景' },
@@ -123,7 +127,8 @@ export function cardSections(fields: CardFields): CardSection[] {
   const sections: CardSection[] = [];
 
   for (const { key, label } of PLAIN_FIELDS) {
-    const text = fields[key];
+    // `nickname` is optional on the card, unlike every other plain field.
+    const text = fields[key] ?? '';
     if (text.trim() !== '') sections.push({ path: key, label, text });
   }
 

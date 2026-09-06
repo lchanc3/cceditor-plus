@@ -186,6 +186,7 @@ export function useTranslate(
           gate,
           signal,
           only,
+          concurrency: settings.concurrency,
           onProgress: step(CARD_KEY),
         }),
       ),

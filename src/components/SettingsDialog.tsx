@@ -205,6 +205,30 @@ export function SettingsDialog({
         </div>
 
         <div>
+          <label className="label" htmlFor="concurrency">
+            同時翻譯的段落數
+          </label>
+          <input
+            id="concurrency"
+            type="number"
+            min={1}
+            max={12}
+            step={1}
+            className="field text-sm"
+            value={draft.concurrency}
+            onChange={(event) =>
+              patch({
+                concurrency: Math.min(12, Math.max(1, Math.floor(Number(event.target.value) || 1))),
+              })
+            }
+          />
+          <p className="mt-1 text-xs leading-relaxed text-dim">
+            整卡翻譯真正的速度旋鈕。上面的每分鐘上限是煞車，這個是油門——
+            長段落通常踩不到那個上限。調高會更快，也更容易吃到限流。
+          </p>
+        </div>
+
+        <div>
           <label className="label" htmlFor="rpm">
             每分鐘請求數上限
           </label>

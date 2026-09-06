@@ -65,6 +65,21 @@ describe('cardSections', () => {
     ]);
   });
 
+  it('treats the nickname as a section, so it can be translated at all', () => {
+    // It was seeded as a term from the beginning but never read as a section,
+    // so it could not be translated and the term it seeded sat at zero
+    // occurrences forever.
+    const fields = card({ name: 'Kaelen', nickname: 'The Ashen' });
+
+    expect(paths(fields)).toContain('nickname');
+    expect(parseSectionPath('nickname')).toEqual({ kind: 'field', key: 'nickname' });
+    expect(scanUsage(fields, [term({ source: 'The Ashen' })])[0].total).toBe(1);
+  });
+
+  it('leaves a card with no nickname alone', () => {
+    expect(paths(card({ name: 'Kaelen' }))).not.toContain('nickname');
+  });
+
   it('uses the same path keys as the translation UI', () => {
     const fields = card({
       description: 'd',

@@ -55,6 +55,17 @@ export interface AISettings {
    * default leaves headroom under flash-lite's 15.
    */
   requestsPerMinute: number;
+
+  /**
+   * How many sections a whole-card run translates at once.
+   *
+   * This, not `requestsPerMinute`, is what a long card's wall clock actually
+   * depends on: three workers against replies of half a minute settle at around
+   * five requests a minute on their own, so a per-minute cap set above that is
+   * never reached and raising it changes nothing. The pacing gate is a brake;
+   * this is the throttle.
+   */
+  concurrency: number;
 }
 
 export const DEFAULT_SETTINGS: AISettings = {
@@ -64,6 +75,7 @@ export const DEFAULT_SETTINGS: AISettings = {
   targetLang: '繁體中文',
   temperature: 0.3,
   requestsPerMinute: 10,
+  concurrency: 3,
 };
 
 /** Endpoints people commonly point the OpenAI-compatible provider at. */
