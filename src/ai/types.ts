@@ -108,6 +108,7 @@ export class ProviderError extends Error {
       status?: number;
       retryable?: boolean;
       filtered?: boolean;
+      tooLong?: boolean;
       /** How long the server asked us to wait, from its Retry-After header. */
       retryAfterMs?: number;
       cause?: unknown;
@@ -132,6 +133,21 @@ export class ProviderError extends Error {
    */
   get filtered(): boolean {
     return this.options.filtered ?? false;
+  }
+
+  /**
+   * The model had no room left to answer in — Gemini's `MAX_TOKENS` with an
+   * empty reply, which is a long section rather than a rejected one.
+   *
+   * It behaves like a filtered section for the run: retrying the same text
+   * against the same budget produces the same nothing, and it says nothing
+   * about the other nineteen sections, so it must not count towards the
+   * failures that stop a run. It is separate from `filtered` only because
+   * telling somebody their card was blocked, when it was merely too long for
+   * one section, sends them looking for the wrong fix.
+   */
+  get tooLong(): boolean {
+    return this.options.tooLong ?? false;
   }
 
   /**

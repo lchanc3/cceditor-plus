@@ -108,11 +108,33 @@ function withEntries(state: CardState, update: (entries: LorebookEntry[]) => Lor
 }
 
 /** Append keys the entry does not already carry. */
+/**
+ * Append the keys this entry does not already carry.
+ *
+ * The list being added is checked against itself as it goes, not only against
+ * the keys already there. A batch of translated keys routinely repeats itself,
+ * because several spellings of one thing translate to one word: an entry keyed
+ * on `7 yo`, `7 year-old`, `7 years old` and `age: 7` gets four identical 7歲
+ * back, and a fixed "not already present" test lets all four through.
+ *
+ * Case is ignored, which is what an entry does by default. A key that differs
+ * from an existing one only in case is not a second trigger worth carrying —
+ * and nothing appended here is ever a deliberate case variant, since it comes
+ * from the glossary or from a translator.
+ */
 function appendKeys(entry: LorebookEntry, field: KeyField, keys: string[]): LorebookEntry {
   const current = entry[field] ?? [];
-  const added = keys
-    .map((key) => key.trim())
-    .filter((key) => key !== '' && !current.includes(key));
+  const seen = new Set(current.map((key) => key.trim().toLowerCase()));
+  const added: string[] = [];
+
+  for (const raw of keys) {
+    const key = raw.trim();
+    const folded = key.toLowerCase();
+    if (key === '' || seen.has(folded)) continue;
+    seen.add(folded);
+    added.push(key);
+  }
+
   return added.length === 0 ? entry : { ...entry, [field]: [...current, ...added] };
 }
 

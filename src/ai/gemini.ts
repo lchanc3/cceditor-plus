@@ -119,12 +119,18 @@ export function createGeminiProvider(settings: GeminiSettings): Provider {
 
       if (!text.trim()) {
         const reason = candidate?.finishReason ?? data.promptFeedback?.blockReason ?? '';
+        // Running out of room is not a rejection. It is handled the same way —
+        // this section only, no retry, no vote towards stopping the run — but
+        // calling it a content filter sends the reader looking for the wrong
+        // fix, when what they need is a shorter section or a bigger budget.
+        const tooLong = reason === 'MAX_TOKENS';
+
         throw new ProviderError(
           FINISH_REASON_HINTS[reason] ?? `Gemini 沒有回傳內容${reason ? `（原因：${reason}）` : ''}。`,
           // A named reason is always about this particular text — safety,
           // recitation, length. No reason at all is an unexplained empty
           // response, which is worth another try.
-          { retryable: reason === '', filtered: reason !== '' },
+          { retryable: reason === '', filtered: reason !== '' && !tooLong, tooLong },
         );
       }
       return text;

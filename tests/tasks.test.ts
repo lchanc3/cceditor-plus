@@ -917,6 +917,29 @@ describe('translateCard', () => {
     expect(results[2].error).toContain('沒有嘗試');
   });
 
+  it('never stops for sections the model had no room to answer, and does not call them blocked', async () => {
+    // Gemini answers an over-long section with MAX_TOKENS and an empty reply.
+    // It behaves like a blocked section — this text only, no retry — but saying
+    // the content was filtered sends the reader after the wrong fix.
+    const provider: Provider = {
+      id: 'gemini',
+      async chat() {
+        throw new ProviderError('回應長度超過模型上限，請把內容拆成幾段再翻譯。', {
+          tooLong: true,
+        });
+      },
+      async listModels() {
+        return [];
+      },
+    };
+
+    const results = await translateCard(provider, fields, { ...options, concurrency: 1 });
+
+    expect(results.some((r) => r.skipped)).toBe(false);
+    expect(results.every((r) => r.tooLong)).toBe(true);
+    expect(results.some((r) => r.filtered)).toBe(false);
+  });
+
   it('tolerates a single non-filtered failure', async () => {
     const { provider } = byContent((content) => {
       if (content.includes('FIRST')) brokenKey();

@@ -311,6 +311,38 @@ describe('lore.addKeyList', () => {
     ]);
   });
 
+  it('adds one key however many times the list repeats it', () => {
+    // What a real entry produced: keyed on `7 yo`, `7 year-old`, `7 years old`
+    // and `age: 7`, every one of which translates to 七歲, and all four landed
+    // because "not already present" was measured against the original keys only.
+    const state = run(withEntry(), {
+      type: 'lore.addKeyList',
+      index: 0,
+      field: 'keys',
+      keys: ['七歲', '七歲', ' 七歲 ', '八歲'],
+    });
+
+    expect(state.model!.fields.character_book!.entries[0].keys).toEqual([
+      'Grand Maiden Elder',
+      '七歲',
+      '八歲',
+    ]);
+  });
+
+  it('treats a key that differs only in case as one it already has', () => {
+    const state = run(withEntry(), {
+      type: 'lore.addKeyList',
+      index: 0,
+      field: 'keys',
+      keys: ['grand maiden elder', 'Elder', 'elder'],
+    });
+
+    expect(state.model!.fields.character_book!.entries[0].keys).toEqual([
+      'Grand Maiden Elder',
+      'Elder',
+    ]);
+  });
+
   it('still splits a raw string for the manual input box', () => {
     const state = run(withEntry(), {
       type: 'lore.addKeys',

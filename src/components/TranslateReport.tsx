@@ -90,7 +90,14 @@ export function TranslateReport({
                     {result.label}
                   </button>
                   <span className="text-dim">
-                    {result.filtered ? '（內容過濾）' : result.transient ? '（限流）' : ''} —{' '}
+                    {result.filtered
+                      ? '（內容過濾）'
+                      : result.tooLong
+                        ? '（超出長度）'
+                        : result.transient
+                          ? '（限流）'
+                          : ''}{' '}
+                    —{' '}
                     {result.error}
                   </span>
                 </li>

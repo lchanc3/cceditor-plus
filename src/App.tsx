@@ -316,8 +316,20 @@ export default function App() {
       const translated = await translate.translateKeys(taskKey, orphans);
       if (!translated) return fromGlossary;
 
-      const already = new Set([...keys, ...fromGlossary].map((key) => key.toLowerCase()));
-      return [...fromGlossary, ...translated.filter((word) => !already.has(word.toLowerCase()))];
+      // The set grows as it accepts, because the reply repeats itself whenever
+      // several spellings of one thing translate to one word — which is most of
+      // the time, on the entries that carry the most keys.
+      const seen = new Set([...keys, ...fromGlossary].map((key) => key.trim().toLowerCase()));
+      const added = [...fromGlossary];
+
+      for (const word of translated) {
+        const folded = word.trim().toLowerCase();
+        if (seen.has(folded)) continue;
+        seen.add(folded);
+        added.push(word);
+      }
+
+      return added;
     },
     [state.glossary.glossary, translate],
   );
@@ -331,19 +343,16 @@ export default function App() {
       const content = await translate.translate(key, entry.content);
       if (content === null) return;
 
-      const existingSecondary = entry.secondary_keys ?? [];
-      const keys = [...entry.keys, ...(await addedKeysFor(key, entry.keys))];
-      const secondary = [...existingSecondary, ...(await addedKeysFor(key, existingSecondary))];
+      const keys = await addedKeysFor(key, entry.keys);
+      const secondary = await addedKeysFor(key, entry.secondary_keys ?? []);
 
-      dispatch({
-        type: 'lore.patch',
-        index,
-        patch: {
-          content,
-          keys,
-          ...(secondary.length > 0 ? { secondary_keys: secondary } : {}),
-        },
-      });
+      // Written through the same action the whole-card run uses, so both paths
+      // get one set of rules about what may be appended and what is a repeat.
+      dispatch({ type: 'lore.patch', index, patch: { content } });
+      if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
+      if (secondary.length > 0) {
+        dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
+      }
       settle(key, entry.content, content);
     },
     [addedKeysFor, dispatch, model, settle, translate],

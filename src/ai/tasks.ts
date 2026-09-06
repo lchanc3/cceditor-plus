@@ -969,6 +969,8 @@ export interface SectionResult {
   error?: string;
   /** A content filter rejected this text specifically. */
   filtered?: boolean;
+  /** The model had no room to answer in — this section is long, not blocked. */
+  tooLong?: boolean;
   /** The endpoint asked us to slow down — a rate limit, not a broken setup. */
   transient?: boolean;
   /** Never attempted, because the run was stopped. */
@@ -1046,8 +1048,11 @@ export async function translateCard(
       const failure = error instanceof ProviderError ? error : null;
       const filtered = failure?.filtered ?? false;
       const transient = failure?.transient ?? false;
-      if (!filtered && !transient) fatalFailures++;
-      return { ...base, error: describeError(error), filtered, transient };
+      // A section too long to answer says as little about the other nineteen as
+      // a blocked one does, so it does not vote for stopping either.
+      const tooLong = failure?.tooLong ?? false;
+      if (!filtered && !transient && !tooLong) fatalFailures++;
+      return { ...base, error: describeError(error), filtered, transient, tooLong };
     } finally {
       options.onProgress?.(++finished, sections.length);
     }
