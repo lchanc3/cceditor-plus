@@ -6,8 +6,15 @@
  * proxy through anyway.
  */
 
-import { joinUrl, requestJson } from './http';
-import { ChatMessage, ChatOptions, GeminiSettings, Provider, ProviderError } from './types';
+import { PARAMETER_REJECTED, joinUrl, requestJson } from './http';
+import {
+  ChatMessage,
+  ChatOptions,
+  GeminiSettings,
+  Provider,
+  ProviderError,
+  ReasoningLevel,
+} from './types';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -22,6 +29,41 @@ const SAFETY_SETTINGS = [
   { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
   { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
 ];
+
+type NamedLevel = Exclude<ReasoningLevel, 'auto'>;
+
+/**
+ * Gemini has asked for the thinking level in two different shapes.
+ *
+ * The 2.x models take a token budget: 0 turns thinking off, and the flash
+ * models cap out at 24576. Gemini 3 replaced that with a named level, and does
+ * not let thinking be turned off at all — so `off` is mapped to the lowest
+ * level there rather than pretended to work.
+ *
+ * Which shape an endpoint wants is guessed from the model id and confirmed by
+ * whether it complains, because the id is all we have: the model list gives no
+ * capabilities, and a proxy may serve either family under a name of its own.
+ */
+const THINKING_BUDGET: Record<NamedLevel, number> = {
+  off: 0,
+  low: 1024,
+  medium: 8192,
+  high: 24576,
+};
+
+const THINKING_LEVEL: Record<NamedLevel, string> = {
+  off: 'low',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+};
+
+function thinkingConfig(model: string, level: ReasoningLevel): Record<string, unknown> | undefined {
+  if (level === 'auto') return undefined;
+  return /gemini-[3-9]/.test(model)
+    ? { thinkingLevel: THINKING_LEVEL[level] }
+    : { thinkingBudget: THINKING_BUDGET[level] };
+}
 
 interface GeminiPart {
   text?: string;
@@ -46,8 +88,57 @@ const FINISH_REASON_HINTS: Record<string, string> = {
   PROHIBITED_CONTENT: '內容被 Gemini 判定為禁止內容而未回傳。',
 };
 
-export function createGeminiProvider(settings: GeminiSettings): Provider {
+/**
+ * Send with the thinking parameter, and once more without it if the endpoint
+ * refused it.
+ *
+ * The guess in `thinkingConfig` is the reason this exists: an older proxy, a
+ * model whose family cannot be read off its name, a gateway that forwards
+ * `generationConfig` verbatim to something else — any of them answers an
+ * unknown field with a 400. Degrading to the model's own default is the right
+ * outcome there. A translation run must not stop because a hint was refused.
+ */
+async function sendWithThinkingFallback<T>(
+  send: (withThinking: boolean) => Promise<T>,
+  withThinking: boolean,
+  onRefused: () => void,
+): Promise<T> {
+  if (!withThinking) return send(false);
+  try {
+    return await send(true);
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') throw error;
+    if (!(error instanceof ProviderError)) throw error;
+    // A 400 that is really a blocked prompt would fail again without the
+    // parameter, so it is not worth a second round trip.
+    if (error.filtered) throw error;
+    const { status } = error.options;
+    if (status === undefined || !PARAMETER_REJECTED.has(status)) throw error;
+
+    const result = await send(false);
+    // Only a *successful* retry proves the parameter was the problem. A 400 on
+    // its own never says which field it was about, and remembering the wrong
+    // one would give up a hint the endpoint was perfectly happy with.
+    onRefused();
+    return result;
+  }
+}
+
+export function createGeminiProvider(
+  settings: GeminiSettings,
+  reasoning: ReasoningLevel = 'auto',
+): Provider {
   const apiKey = settings.apiKey.trim();
+  const thinking = thinkingConfig(settings.model, reasoning);
+
+  /**
+   * Set once the endpoint has refused the thinking parameter, so a 37-section
+   * card pays for that discovery once instead of thirty-seven times — the cost
+   * is not only the round trip but a slot in a per-minute quota. A refusal that
+   * was really about something else, a mistyped model name, is forgotten as
+   * soon as it is fixed: changing the settings builds a new provider.
+   */
+  let thinkingRefused = false;
 
   const requireKey = () => {
     if (!apiKey) {
@@ -93,26 +184,32 @@ export function createGeminiProvider(settings: GeminiSettings): Provider {
         `models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
       );
 
-      const data = await requestJson<GeminiResponse>(
-        url,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: options.signal,
-          body: JSON.stringify({
-            contents: turns,
-            ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-            safetySettings: SAFETY_SETTINGS,
-            generationConfig: {
-              ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
-              ...(options.topP !== undefined ? { topP: options.topP } : {}),
-              ...(options.maxTokens !== undefined ? { maxOutputTokens: options.maxTokens } : {}),
-              ...(options.json ? { responseMimeType: 'application/json' } : {}),
-            },
-          }),
-        },
-        'Gemini 請求',
-      );
+      const send = (withThinking: boolean) =>
+        requestJson<GeminiResponse>(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: options.signal,
+            body: JSON.stringify({
+              contents: turns,
+              ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+              safetySettings: SAFETY_SETTINGS,
+              generationConfig: {
+                ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+                ...(options.topP !== undefined ? { topP: options.topP } : {}),
+                ...(options.maxTokens !== undefined ? { maxOutputTokens: options.maxTokens } : {}),
+                ...(options.json ? { responseMimeType: 'application/json' } : {}),
+                ...(withThinking && thinking ? { thinkingConfig: thinking } : {}),
+              },
+            }),
+          },
+          'Gemini 請求',
+        );
+
+      const data = await sendWithThinkingFallback(send, thinking !== undefined && !thinkingRefused, () => {
+        thinkingRefused = true;
+      });
 
       const candidate = data.candidates?.[0];
       const text = candidate?.content?.parts?.map((part) => part.text ?? '').join('') ?? '';

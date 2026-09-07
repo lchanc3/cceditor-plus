@@ -5,6 +5,7 @@ import {
   AISettings,
   ModelInfo,
   OPENAI_PRESETS,
+  REASONING_LEVELS,
   TARGET_LANGUAGES,
   createProvider,
   describeError,
@@ -95,7 +96,7 @@ export function SettingsDialog({
             settings={{ ...draft, provider: 'gemini' }}
             value={draft.gemini.model}
             onChange={(model) => patch({ gemini: { ...draft.gemini, model } })}
-            placeholder="gemini-2.5-flash"
+            placeholder="gemini-3.5-flash-lite"
           />
         </>
       ) : (
@@ -202,6 +203,30 @@ export function SettingsDialog({
             onChange={(event) => patch({ temperature: Number(event.target.value) })}
           />
           <p className="mt-1 text-xs text-dim">越低越貼近原文，越高越自由。</p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="reasoning">
+            思考等級
+          </label>
+          <select
+            id="reasoning"
+            className="field"
+            value={draft.reasoning}
+            onChange={(event) =>
+              patch({ reasoning: event.target.value as AISettings['reasoning'] })
+            }
+          >
+            {REASONING_LEVELS.map((level) => (
+              <option key={level.value} value={level.value}>
+                {level.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs leading-relaxed text-dim">
+            翻譯和詞彙表的每一次請求都套用。調高譯文通常更貼合語境，但每段都會變慢、也更耗
+            token。端點不支援這個參數時會自動改用模型預設，不會讓整卡翻譯中斷。
+          </p>
         </div>
 
         <div>

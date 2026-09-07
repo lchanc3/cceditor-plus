@@ -1,5 +1,24 @@
 export type ProviderId = 'gemini' | 'openai';
 
+/**
+ * How hard the model should think before it answers.
+ *
+ * `auto` sends no parameter at all and leaves the decision to the model's own
+ * default — what every version before this one did, and the only setting every
+ * endpoint is guaranteed to accept. The rest are advisory in the same way
+ * `json` is: each provider maps them onto its own parameter, and an endpoint
+ * that has never heard of that parameter has the request retried without it.
+ */
+export type ReasoningLevel = 'auto' | 'off' | 'low' | 'medium' | 'high';
+
+export const REASONING_LEVELS: { value: ReasoningLevel; label: string }[] = [
+  { value: 'auto', label: '模型預設' },
+  { value: 'off', label: '關閉思考' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+];
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -47,6 +66,18 @@ export interface AISettings {
   openai: OpenAISettings;
   targetLang: string;
   temperature: number;
+
+  /**
+   * How hard the model thinks, on every request the app makes — the prose
+   * translations and the glossary passes alike.
+   *
+   * One setting rather than one per task on purpose. Splitting them is
+   * defensible on paper (deciding a name is recall, not composition) but it
+   * buys a second knob nobody can calibrate without running both, and the
+   * glossary is what the prose is then pinned to: thinking harder about the
+   * names and less about the sentences gets the dependency backwards.
+   */
+  reasoning: ReasoningLevel;
   /**
    * Requests per minute the endpoint will tolerate. 0 means unlimited.
    *
@@ -70,10 +101,11 @@ export interface AISettings {
 
 export const DEFAULT_SETTINGS: AISettings = {
   provider: 'gemini',
-  gemini: { apiKey: '', model: 'gemini-2.5-flash' },
+  gemini: { apiKey: '', model: 'gemini-3.5-flash-lite' },
   openai: { baseUrl: 'https://api.openai.com/v1', apiKey: '', model: 'gpt-4o-mini' },
   targetLang: '繁體中文',
   temperature: 0.3,
+  reasoning: 'auto',
   requestsPerMinute: 10,
   concurrency: 3,
 };

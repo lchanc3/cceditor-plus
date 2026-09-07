@@ -6,6 +6,15 @@ const CONTENT_POLICY = /content[_ -]?(?:filter|policy)|responsible ?ai|safety/i;
 /** HTTP statuses worth retrying: rate limits and transient server errors. */
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 
+/**
+ * Statuses that mean "this endpoint did not like a parameter", as opposed to
+ * "this request was wrong". OpenAI itself returns 400 when `response_format` is
+ * used without the word JSON in the prompt; LM Studio, Ollama and assorted
+ * proxies return 400 or 422 for the parameter simply being unknown to them, and
+ * Gemini answers an unrecognised `generationConfig` field the same way.
+ */
+export const PARAMETER_REJECTED = new Set([400, 422]);
+
 export async function requestJson<T>(
   url: string,
   init: RequestInit,

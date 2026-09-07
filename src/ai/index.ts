@@ -9,9 +9,12 @@ export * from './tasks';
 export * from './json';
 
 export function createProvider(settings: AISettings): Provider {
+  // The reasoning level rides on the provider rather than on each call, so
+  // every task gets it without having to remember to pass it — the glossary
+  // passes included, which is the point of having one setting for all of them.
   return settings.provider === 'openai'
-    ? createOpenAIProvider(settings.openai)
-    : createGeminiProvider(settings.gemini);
+    ? createOpenAIProvider(settings.openai, settings.reasoning)
+    : createGeminiProvider(settings.gemini, settings.reasoning);
 }
 
 const STORAGE_KEY = 'cceditor.ai-settings.v1';

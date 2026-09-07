@@ -304,3 +304,118 @@ describe('Gemini JSON mode', () => {
     ).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reasoning level on the wire
+// ---------------------------------------------------------------------------
+
+/**
+ * The level is a hint, and hints are exactly what the endpoints in the wild
+ * disagree about: a non-reasoning model rejects `reasoning_effort`, a local
+ * proxy rejects anything it has not heard of, and Gemini wants the level in one
+ * of two shapes depending on the model. What has to hold in every one of those
+ * cases is that the translation still happens.
+ */
+describe('reasoning level', () => {
+  const config = (body: Record<string, unknown>) =>
+    body.generationConfig as Record<string, unknown>;
+
+  it('sends reasoning_effort to an OpenAI-compatible endpoint', async () => {
+    const { bodies } = stubFetch({ status: 200, body: completion('hi') });
+    await createOpenAIProvider({ baseUrl: 'https://example.test/v1', apiKey: 'k', model: 'm' }, 'high')
+      .chat([{ role: 'user', content: 'hi' }]);
+    expect(bodies[0].reasoning_effort).toBe('high');
+  });
+
+  it('sends nothing at all on auto', async () => {
+    const { bodies } = stubFetch({ status: 200, body: completion('hi') });
+    await openai().chat([{ role: 'user', content: 'hi' }]);
+    expect(bodies[0].reasoning_effort).toBeUndefined();
+  });
+
+  it('drops the hint before JSON mode when both are refused', async () => {
+    // The order matters: losing JSON mode costs a parse, losing the hint costs
+    // only quality, so the hint goes first.
+    const { bodies, fetchMock } = stubFetch(
+      { status: 400, body: { error: { message: 'unknown parameter: reasoning_effort' } } },
+      { status: 200, body: completion('{"a":1}') },
+    );
+
+    const text = await createOpenAIProvider(
+      { baseUrl: 'https://example.test/v1', apiKey: 'k', model: 'm' },
+      'high',
+    ).chat([{ role: 'user', content: 'hi' }], { json: true });
+
+    expect(text).toBe('{"a":1}');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(bodies[1].reasoning_effort).toBeUndefined();
+    expect(bodies[1].response_format).toBeDefined();
+  });
+
+  it('stops re-sending a hint the endpoint has already refused', async () => {
+    // A card is 37 requests against a per-minute quota. Learning this once is
+    // the difference between one wasted slot and thirty-seven.
+    const { fetchMock } = stubFetch(
+      { status: 400, body: { error: { message: 'unknown parameter: reasoning_effort' } } },
+      { status: 200, body: completion('one') },
+      { status: 200, body: completion('two') },
+    );
+
+    const provider = createOpenAIProvider(
+      { baseUrl: 'https://example.test/v1', apiKey: 'k', model: 'm' },
+      'high',
+    );
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks Gemini 2.x for a thinking budget', async () => {
+    const { bodies } = stubFetch({ status: 200, body: generated('hi') });
+    await createGeminiProvider({ apiKey: 'k', model: 'gemini-2.5-flash' }, 'off').chat([
+      { role: 'user', content: 'hi' },
+    ]);
+    expect(config(bodies[0]).thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('asks Gemini 3 for a named level instead', async () => {
+    const { bodies } = stubFetch({ status: 200, body: generated('hi') });
+    await createGeminiProvider({ apiKey: 'k', model: 'gemini-3.5-flash-lite' }, 'high').chat([
+      { role: 'user', content: 'hi' },
+    ]);
+    expect(config(bodies[0]).thinkingConfig).toEqual({ thinkingLevel: 'high' });
+  });
+
+  it('falls back to the model default when Gemini refuses the shape', async () => {
+    const { bodies, fetchMock } = stubFetch(
+      { status: 400, body: { error: { message: 'Unknown name "thinkingLevel"' } } },
+      { status: 200, body: generated('翻譯') },
+    );
+
+    const text = await createGeminiProvider(
+      { apiKey: 'k', model: 'gemini-3.5-flash-lite' },
+      'high',
+    ).chat([{ role: 'user', content: 'hi' }]);
+
+    expect(text).toBe('翻譯');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(config(bodies[1]).thinkingConfig).toBeUndefined();
+  });
+
+  it('does not mistake a blocked prompt for a refused parameter', async () => {
+    // Azure and several proxies report a blocked prompt as a 400. Retrying it
+    // without the hint buys a second rejection and a second quota slot.
+    const { fetchMock } = stubFetch({
+      status: 400,
+      body: { error: { message: 'blocked by content filter' } },
+    });
+
+    await expect(
+      createGeminiProvider({ apiKey: 'k', model: 'gemini-3.5-flash-lite' }, 'high').chat([
+        { role: 'user', content: 'hi' },
+      ]),
+    ).rejects.toThrow(ProviderError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
