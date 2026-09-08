@@ -8,6 +8,7 @@
  */
 
 import type { CardModel } from '../card';
+import type { UndoPoint } from '../state/cardStore';
 
 const DB_NAME = 'cceditor-plus';
 const STORE = 'draft';
@@ -17,6 +18,16 @@ export interface Draft {
   model: CardModel;
   imageBytes?: Uint8Array;
   savedAt: number;
+  /**
+   * What the last translation wrote over.
+   *
+   * Kept here rather than in memory alone for the case it exists for: a run
+   * that damaged the card, noticed after the tab was closed and reopened. An
+   * undo that does not survive that is an undo for the easy half of the
+   * problem. The artwork is not duplicated — the point holds a model, and the
+   * image is whatever the draft already carries.
+   */
+  undo?: UndoPoint;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -49,10 +60,15 @@ async function withStore<T>(
 }
 
 /** Every operation is best-effort: a failed draft save must never break editing. */
-export async function saveDraft(model: CardModel, imageBytes?: Uint8Array): Promise<void> {
+export async function saveDraft(
+  model: CardModel,
+  imageBytes?: Uint8Array,
+  undo?: UndoPoint | null,
+): Promise<void> {
   try {
     const draft: Draft = { model, savedAt: Date.now() };
     if (imageBytes) draft.imageBytes = imageBytes;
+    if (undo) draft.undo = undo;
     await withStore('readwrite', (store) => store.put(draft, KEY));
   } catch {
     /* private browsing, quota, or no IndexedDB */

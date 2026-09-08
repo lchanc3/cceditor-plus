@@ -1,4 +1,4 @@
-import { CheckCircle2, RotateCcw, X } from 'lucide-react';
+import { CheckCircle2, RotateCcw, Undo2, X } from 'lucide-react';
 
 import type { SectionResult } from '../ai';
 import type { TranslationIssue } from '../glossary';
@@ -32,11 +32,17 @@ const ISSUE_LABELS: Record<TranslationIssue['kind'], string> = {
 export function TranslateReport({
   report,
   onRetry,
+  onUndo,
   onDismiss,
   onJump,
 }: {
   report: RunReport;
   onRetry: (paths: string[]) => void;
+  /**
+   * Put the card back as it was before this run. Absent once it has been used,
+   * or once something else has been translated over it.
+   */
+  onUndo?: () => void;
   onDismiss: () => void;
   onJump: (path: string) => void;
 }) {
@@ -149,6 +155,19 @@ export function TranslateReport({
             <button onClick={() => onRetry(retryable)} className="btn-quiet">
               <RotateCcw className="size-3.5" />
               只重試這 {retryable.length} 段
+            </button>
+          )}
+
+          {/*
+            Offered whatever the run reported, not only when it went badly. The
+            checks below say what they can see; a translation that reads wrong
+            for a reason no rule covers is the case this is here for, and by
+            then the source is only in this one place.
+          */}
+          {onUndo && (
+            <button onClick={onUndo} className="btn-quiet">
+              <Undo2 className="size-3.5" />
+              還原這次翻譯
             </button>
           )}
         </div>

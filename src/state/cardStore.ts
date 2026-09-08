@@ -20,6 +20,21 @@ import {
   writeTranslationMeta,
 } from '../glossary';
 
+/**
+ * The card as it stood before the last translation wrote over it.
+ *
+ * One point rather than a stack, because one event destroys work here: a
+ * translation writing into a field over the only copy of what was there. A
+ * refusal or an echoed source looks enough like a translation to be saved, and
+ * the draft holds a single version, so without this the entry is simply gone. A
+ * general edit history is a different and much larger feature.
+ */
+export interface UndoPoint {
+  model: CardModel;
+  /** What would be undone, for the button to name. */
+  label: string;
+}
+
 export interface CardState {
   model: CardModel | null;
   /** Original PNG bytes, reused verbatim when exporting so artwork is untouched. */
@@ -36,13 +51,17 @@ export interface CardState {
    * saves the viewer from reparsing the extensions object on every render.
    */
   glossary: TranslationMeta;
+  /** Set before a translation run; cleared by taking it, or by loading a card. */
+  undo: UndoPoint | null;
 }
 
 export type KeyField = 'keys' | 'secondary_keys';
 
 export type CardAction =
   | { type: 'load'; model: CardModel; imageBytes?: Uint8Array; origin: CardOrigin; warnings: string[] }
-  | { type: 'restore'; model: CardModel; imageBytes?: Uint8Array }
+  | { type: 'restore'; model: CardModel; imageBytes?: Uint8Array; undo?: UndoPoint | null }
+  | { type: 'snapshot'; label: string }
+  | { type: 'undo' }
   | { type: 'setField'; key: keyof CardFields; value: CardFields[keyof CardFields] }
   /** Write back to whatever `cardSections` called `path`. Unknown paths are ignored. */
   | { type: 'section.set'; path: string; value: string }
@@ -78,6 +97,7 @@ export const initialCardState: CardState = {
   warnings: [],
   dirty: false,
   glossary: createTranslationMeta(),
+  undo: null,
 };
 
 /** Splitting on both ASCII and full-width separators; card authors use either. */
@@ -171,6 +191,9 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         // Reading the glossary back off the card is what stops the names
         // drifting between one editing session and the next.
         glossary: hydrate(action.model),
+        // A point into the card that was open before this one would restore
+        // the wrong card entirely.
+        undo: null,
       };
 
     case 'restore':
@@ -181,6 +204,24 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         warnings: [],
         dirty: true,
         glossary: hydrate(action.model),
+        // Carried through the draft, so closing the tab after a bad run is not
+        // itself the thing that makes it permanent.
+        undo: action.undo ?? null,
+      };
+
+    case 'snapshot':
+      // Replacing whatever was there is deliberate: the point anybody wants
+      // back is the one from the run they just watched.
+      return state.model ? { ...state, undo: { model: state.model, label: action.label } } : state;
+
+    case 'undo':
+      if (!state.undo) return state;
+      return {
+        ...state,
+        model: state.undo.model,
+        dirty: true,
+        glossary: hydrate(state.undo.model),
+        undo: null,
       };
 
     case 'setField':
@@ -351,8 +392,10 @@ export function useCardStore() {
     () => ({
       load: (model: CardModel, origin: CardOrigin, warnings: string[], imageBytes?: Uint8Array) =>
         dispatch({ type: 'load', model, origin, warnings, imageBytes }),
-      restore: (model: CardModel, imageBytes?: Uint8Array) =>
-        dispatch({ type: 'restore', model, imageBytes }),
+      restore: (model: CardModel, imageBytes?: Uint8Array, undo?: UndoPoint | null) =>
+        dispatch({ type: 'restore', model, imageBytes, undo }),
+      snapshot: (label: string) => dispatch({ type: 'snapshot', label }),
+      undo: () => dispatch({ type: 'undo' }),
       setField: <K extends keyof CardFields>(key: K, value: CardFields[K]) =>
         dispatch({ type: 'setField', key, value }),
       startBlank: () => dispatch({ type: 'load', model: createEmptyCard(), origin: 'json', warnings: [] }),

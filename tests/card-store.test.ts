@@ -356,3 +356,92 @@ describe('lore.addKeyList', () => {
     ]);
   });
 });
+
+describe('the undo point', () => {
+  it('puts back what a translation wrote over', () => {
+    const state = run(
+      loaded(worldCard()),
+      { type: 'snapshot', label: '整卡翻譯' },
+      { type: 'section.set', path: 'description', value: '模型婉拒了這次請求。' },
+    );
+
+    expect(state.model?.fields.description).toBe('模型婉拒了這次請求。');
+
+    const back = cardReducer(state, { type: 'undo' });
+    expect(back.model?.fields.description).toBe('The Grand Maiden Elder rules Ashfall Keep.');
+  });
+
+  it('restores the glossary the card was carrying at the time', () => {
+    // The names live on the card, so putting the card back has to put them back
+    // too — otherwise the working copy and the card drift apart, which is the
+    // one thing the rest of this reducer is built to prevent.
+    const state = run(
+      loaded(worldCard()),
+      { type: 'glossary.addTerm', term: createTerm({ source: 'Ashfall Keep', target: '燼落堡' }) },
+      { type: 'snapshot', label: '整卡翻譯' },
+      { type: 'glossary.addTerm', term: createTerm({ source: 'Emberwright', target: '燼匠' }) },
+    );
+
+    expect(state.glossary.glossary).toHaveLength(2);
+
+    const back = cardReducer(state, { type: 'undo' });
+    expect(back.glossary.glossary.map((t) => t.source)).toEqual(['Ashfall Keep']);
+    expect(readTranslationMeta(back.model!.fields)?.glossary).toHaveLength(1);
+  });
+
+  it('is spent once it is taken', () => {
+    // Not a stack. Taking it twice would put back a card from further away than
+    // anyone asked for.
+    const state = run(
+      loaded(worldCard()),
+      { type: 'snapshot', label: '整卡翻譯' },
+      { type: 'section.set', path: 'description', value: 'x' },
+      { type: 'undo' },
+    );
+
+    expect(state.undo).toBeNull();
+    expect(cardReducer(state, { type: 'undo' })).toBe(state);
+  });
+
+  it('keeps only the most recent point', () => {
+    const state = run(
+      loaded(worldCard()),
+      { type: 'snapshot', label: '翻譯欄位' },
+      { type: 'section.set', path: 'description', value: 'first' },
+      { type: 'snapshot', label: '整卡翻譯' },
+      { type: 'section.set', path: 'description', value: 'second' },
+      { type: 'undo' },
+    );
+
+    expect(state.model?.fields.description).toBe('first');
+  });
+
+  it('does nothing without a card, and is dropped when one is opened', () => {
+    expect(cardReducer(initialCardState, { type: 'snapshot', label: 'x' }).undo).toBeNull();
+
+    // A point into the previous card would restore the wrong card entirely.
+    const state = run(
+      loaded(worldCard()),
+      { type: 'snapshot', label: '整卡翻譯' },
+      { type: 'load', model: createEmptyCard(), origin: 'json', warnings: [] },
+    );
+    expect(state.undo).toBeNull();
+  });
+
+  it('comes back with a restored draft', () => {
+    // The case it exists for: the run went wrong, the tab was closed, and the
+    // card is reopened from the draft.
+    const before = worldCard();
+    const damaged = run(loaded(before), { type: 'section.set', path: 'description', value: 'x' }).model!;
+
+    const state = cardReducer(initialCardState, {
+      type: 'restore',
+      model: damaged,
+      undo: { model: before, label: '整卡翻譯' },
+    });
+
+    expect(cardReducer(state, { type: 'undo' }).model?.fields.description).toBe(
+      'The Grand Maiden Elder rules Ashfall Keep.',
+    );
+  });
+});
