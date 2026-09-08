@@ -309,9 +309,14 @@ function chatJson<T>(
  *
  * Anchored to the start, because a card may well contain an apology in its
  * dialogue; a refusal is what the reply opens with.
+ *
+ * Which means every apology needs its intensifiers spelled out. 「很抱歉」 opens a
+ * refusal at least as often as bare 「抱歉」 does, and with the anchor in place a
+ * missing 「很」 was the whole difference between a section being marked blocked
+ * and the refusal being written into the card as its translation.
  */
 const REFUSAL =
-  /^\s*(?:i\s*(?:'m|’m|am)\s+(?:sorry|afraid|unable)|i\s+(?:can'?t|cannot|won'?t|will\s+not)|sorry[,.]|as\s+an\s+ai\b|i\s+apolog|抱歉|對不起|对不起|我(?:無法|无法|不能|不會|不会|很抱歉))/i;
+  /^\s*(?:i\s*(?:'m|’m|am)\s+(?:sorry|afraid|unable|not\s+able)|i\s+(?:can'?t|cannot|won'?t|will\s+not|must\s+decline|have\s+to\s+decline)|sorry[,.]|unfortunately[,，]|as\s+an\s+ai\b|i\s+apolog|(?:很|非常|真的|十分)?(?:抱歉|對不起|对不起)|不好意思|我(?:必須|必须)?(?:無法|无法|不能|不會|不会|婉拒|拒絕|拒绝|很抱歉))/i;
 
 /**
  * Whether a translation is really a refusal.
@@ -321,12 +326,20 @@ const REFUSAL =
  * refusal away is that the apology has no counterpart in the source — the model
  * opened with something the text it was given never said.
  *
- * The length cap is the second half of that. A long reply that merely opens with
- * an apologetic line is a translation of one; a refusal is a sentence or two
- * standing in for a whole section.
+ * The length is the second half of that. A long reply that merely opens with an
+ * apologetic line is a translation of one; a refusal stands in for a whole
+ * section, so it is short — but short against what it replaced, not against a
+ * fixed number. A model that explains itself over four paragraphs, or does so in
+ * a language that spends more characters saying the same thing, clears any
+ * absolute cap while still being a fraction of what it declined. Measured on a
+ * real card, genuine translations ran between 0.37 and 0.57 of their source.
  */
+const REFUSAL_MAX_CHARS = 200;
+const REFUSAL_MAX_SHARE = 0.25;
+
 function refusedToTranslate(source: string, output: string): boolean {
-  return REFUSAL.test(output) && !REFUSAL.test(source) && output.length < 200;
+  if (!REFUSAL.test(output) || REFUSAL.test(source)) return false;
+  return output.length < REFUSAL_MAX_CHARS || output.length < source.length * REFUSAL_MAX_SHARE;
 }
 
 /** Strip a wrapper the model added despite being told not to. */

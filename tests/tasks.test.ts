@@ -309,6 +309,50 @@ describe('refusals that arrive as an ordinary 200', () => {
     expect((error as ProviderError).filtered).toBe(true);
   });
 
+  it('catches the apology that opens with an intensifier', async () => {
+    // 「很抱歉」 rather than 「抱歉」, which the anchored pattern used to walk
+    // straight past — and a refusal that is not recognised is written into the
+    // card as its translation.
+    const { provider } = fake('很抱歉，我無法翻譯此內容。');
+    const error = await translateText(provider, long, options).catch((e) => e);
+
+    expect((error as ProviderError).filtered).toBe(true);
+  });
+
+  it('catches a refusal that explains itself at length', async () => {
+    // Short against the section it replaced rather than short in absolute
+    // terms: a model that justifies itself over several paragraphs, or does so
+    // in a language that spends more characters, clears any fixed cap.
+    const source = Array.from({ length: 12 }, () => long).join('\n\n');
+    const wordy = Array.from(
+      { length: 10 },
+      () => '很抱歉，我無法協助處理這份內容，因此必須婉拒這次請求。',
+    ).join('\n');
+
+    expect(wordy.length).toBeGreaterThan(200);
+
+    const { provider } = fake(wordy);
+    const error = await translateText(provider, source, options).catch((e) => e);
+
+    expect((error as ProviderError).filtered).toBe(true);
+  });
+
+  it('leaves a translation that merely opens apologetically alone', async () => {
+    // The other side of the same rule: this one opens with an apology because
+    // the scene does, and it is proportionate to the section it translates. A
+    // refusal is not.
+    const source = Array.from({ length: 12 }, () => long).join('\n\n');
+    const translated = Array.from(
+      { length: 20 },
+      () => '很抱歉，姊妹們說，我們不能讓你進去，主母們早已把門閂上了，夜裡誰也不許靠近牆邊。',
+    ).join('\n');
+
+    expect(translated.length).toBeGreaterThan(source.length * 0.25);
+
+    const { provider } = fake(translated);
+    await expect(translateText(provider, source, options)).resolves.toBe(translated);
+  });
+
   it('lets a short source translate into a short apology, which is not a refusal', async () => {
     // The guard that keeps this check from eating real work: a section whose
     // source apologises should come back apologising.
