@@ -240,3 +240,45 @@ describe('edge cases', () => {
     expect(checkTranslation('{{char}}', '{{char}}')).toEqual([]);
   });
 });
+
+describe('untranslated check', () => {
+  const prose =
+    'The Grand Maiden Elder rules from Ashfall Keep, and has done so for nine ' +
+    'hundred years. No one now living remembers the name she was born under.';
+
+  it('catches a section handed back untouched', () => {
+    // Ten of one card's seventeen lorebook entries came back like this, the
+    // same length to the character, and every other check passed all of them.
+    expect(kinds(prose, prose)).toEqual(['untranslated']);
+  });
+
+  it('catches a section whose heading was translated and whose body was not', () => {
+    const source = `[Ashfall Keep]\n${prose}`;
+    expect(kinds(source, `【燼落堡】\n${prose}`)).toContain('untranslated');
+  });
+
+  it('leaves a real translation alone, names kept in the source language and all', () => {
+    const translated =
+      '聖女長老自燼落堡統治，已歷九百年。如今在世的人裡，沒有誰記得她出生時的名字。';
+    expect(kinds(prose, translated)).not.toContain('untranslated');
+  });
+
+  it('does not judge a section too short to have prose in it', () => {
+    // A stat line or a bare macro comes back identical because that is the
+    // correct translation of it.
+    expect(kinds('[Stats]\nHP 100 / SP 100', '[Stats]\nHP 100 / SP 100.')).not.toContain(
+      'untranslated',
+    );
+    expect(kinds('{{char}}', '{{char}}')).not.toContain('untranslated');
+  });
+
+  it('sees a verbatim echo in any language, and a partial one only in 中文', () => {
+    // Stated rather than worked around: the share half of this check reads Han
+    // characters, so an English section returned in English is invisible to it.
+    const es = { targetLang: 'español' };
+    const partly = `【燼落堡】\n${prose}`;
+
+    expect(kinds(prose, prose, es)).toContain('untranslated');
+    expect(kinds(prose, partly, es)).not.toContain('untranslated');
+  });
+});

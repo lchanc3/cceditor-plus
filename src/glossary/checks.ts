@@ -14,7 +14,7 @@
  * heuristic is how a translation acquires a broken sentence.
  */
 
-export type IssueKind = 'macro' | 'structure' | 'script' | 'encoding' | 'note';
+export type IssueKind = 'untranslated' | 'macro' | 'structure' | 'script' | 'encoding' | 'note';
 
 export interface TranslationIssue {
   kind: IssueKind;
@@ -203,6 +203,33 @@ function excerptAround(text: string, index: number, width = 20): string {
   return `${start > 0 ? '…' : ''}${body}${end < text.length ? '…' : ''}`;
 }
 
+/**
+ * A target language written in Han characters, where a section that came back
+ * in the source language is visible by script alone.
+ */
+const wantsHan = (targetLang: string): boolean =>
+  /中文|漢語|汉语|國語|国语|粵語|粤语|華語|华语|zh/i.test(targetLang);
+
+const HAN = /\p{Script=Han}/gu;
+const LATIN = /[A-Za-z]/g;
+
+/** Below this share of the letters, a 中文 translation did not happen. */
+const HAN_SHARE_FLOOR = 0.15;
+
+/**
+ * Under this many letters of prose there was nothing to translate, so a section
+ * that came back identical is not evidence of anything.
+ */
+const MIN_PROSE_LETTERS = 20;
+
+/**
+ * What the share needs before it is worth reading, being the fuzzier of the
+ * two. A heading or a stat block can sit under any share honestly; on the card
+ * this was measured against, every echoed entry ran past a thousand characters
+ * and the lowest real translation still came in at 65% Han.
+ */
+const MIN_SHARE_LETTERS = 120;
+
 /** Traditional Chinese under any of the names the settings offer. */
 export const wantsTraditional = (targetLang: string): boolean => /繁體|繁体|zh-?(?:tw|hant|hk)/i.test(targetLang);
 
@@ -213,6 +240,53 @@ export function checkTranslation(
 ): TranslationIssue[] {
   const issues: TranslationIssue[] = [];
   if (translated.trim() === '') return issues;
+
+  // --- untranslated ---------------------------------------------------------
+  //
+  // The one every other check here is blind to. A model that declines by
+  // handing back its input scores perfectly on all five: the macros match, the
+  // newlines match, there are no simplified characters, no U+FFFD, no note. A
+  // real card came back with ten of its seventeen lorebook entries echoed byte
+  // for byte — 987 characters in, 987 out — and the report called all
+  // twenty-four sections a success. Which also cost them the retry: a section
+  // recorded as translated is never one of the few a retry spends itself on.
+  //
+  // Two shapes, because the echo is not always the whole thing — one entry came
+  // back with its heading translated and its body untouched, another with its
+  // category labels translated and the list untouched. Equality is exact and
+  // holds for any language. The share is what catches the partial ones, and it
+  // only holds where the target language is written in Han: an English section
+  // returned in English is invisible to this file, and saying so is cheaper
+  // than a rule that pretends otherwise.
+  //
+  // Both are gated on the source having had something to translate. A section
+  // that is a stat line or a bare macro comes back identical because that is
+  // the correct translation of it, and macros are substituted rather than
+  // translated, so they are not counted as prose.
+  const sourceProse = source.trim().replace(MACRO, ' ');
+  const proseLetters =
+    (sourceProse.match(LATIN) ?? []).length + (sourceProse.match(HAN) ?? []).length;
+
+  if (proseLetters >= MIN_PROSE_LETTERS) {
+    if (source.trim() === translated.trim()) {
+      issues.push({
+        kind: 'untranslated',
+        message: '譯文與原文逐字相同——模型把原文原封退了回來，這一段沒有被翻譯。',
+      });
+    } else if (proseLetters >= MIN_SHARE_LETTERS && wantsHan(options.targetLang ?? '')) {
+      const han = (translated.match(HAN) ?? []).length;
+      const latin = (translated.match(LATIN) ?? []).length;
+      const share = han + latin === 0 ? 1 : han / (han + latin);
+
+      if (share < HAN_SHARE_FLOOR) {
+        issues.push({
+          kind: 'untranslated',
+          message: `譯文只有 ${Math.round(share * 100)}% 是中文，其餘仍是原文——這一段大概只有標題被翻到。`,
+          excerpt: excerptAround(translated, 0, 30),
+        });
+      }
+    }
+  }
 
   // --- macros ---------------------------------------------------------------
   const before = countMacros(source);

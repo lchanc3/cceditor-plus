@@ -12,6 +12,7 @@ export interface RunReport {
 }
 
 const ISSUE_LABELS: Record<TranslationIssue['kind'], string> = {
+  untranslated: '未翻譯',
   macro: '巨集',
   structure: '結構',
   script: '字體',
