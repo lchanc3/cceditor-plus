@@ -337,6 +337,45 @@ describe('refusals that arrive as an ordinary 200', () => {
     expect((error as ProviderError).filtered).toBe(true);
   });
 
+  it('catches the refusal that argues its case at length', async () => {
+    // The one the length rules cannot reach: a refusal that enumerates
+    // everything it objected to runs long enough to clear the absolute cap and,
+    // against a middling section, lands inside the range real translations
+    // occupy. What gives it away is that it is discussing the request.
+    const source = Array.from({ length: 4 }, () => long).join('\n\n');
+    const argued = [
+      '很抱歉，我無法完成這項翻譯請求。',
+      '',
+      '這份角色卡片包含我無法協助處理的內容，涵蓋了以下幾個方面：',
+      ...Array.from({ length: 8 }, (_, i) => `- 第 ${i + 1} 項：這一段的設定超出我能夠協助的範圍。`),
+      '',
+      '如果您有其他角色的對話範例需要翻譯，我非常樂意協助。',
+    ].join('\n');
+
+    // Long enough that neither length rule fires on its own.
+    expect(argued.length).toBeGreaterThan(200);
+    expect(argued.length).toBeGreaterThan(source.length * 0.25);
+
+    const { provider } = fake(argued);
+    const error = await translateText(provider, source, options).catch((e) => e);
+
+    expect((error as ProviderError).filtered).toBe(true);
+  });
+
+  it('leaves a card that talks about translating alone', async () => {
+    // The guard on that signal. A card whose own text discusses translation —
+    // a translator character, an instruction about rendering names — must not
+    // make every apologetic line in its translation look like a refusal.
+    const source = `The scribe apologises for the translation, and asks to try again. ${long}`;
+    const translated = Array.from(
+      { length: 20 },
+      () => '很抱歉，抄寫員說，這份翻譯還要再等等，主母們尚未看過牆上那幾行字。',
+    ).join('\n');
+
+    const { provider } = fake(translated);
+    await expect(translateText(provider, source, options)).resolves.toBe(translated);
+  });
+
   it('leaves a translation that merely opens apologetically alone', async () => {
     // The other side of the same rule: this one opens with an apology because
     // the scene does, and it is proportionate to the section it translates. A

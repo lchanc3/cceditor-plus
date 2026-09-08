@@ -337,9 +337,37 @@ const REFUSAL =
 const REFUSAL_MAX_CHARS = 200;
 const REFUSAL_MAX_SHARE = 0.25;
 
+/**
+ * A reply that talks about the request instead of answering it.
+ *
+ * The length rules miss the refusal that argues its case: one that enumerates
+ * every objectionable thing it found runs to several hundred characters, and
+ * against a middling lorebook entry that lands around 0.38 of the source —
+ * inside the range real translations occupy, so no threshold separates them.
+ *
+ * What separates them is subject. A translated character card describes a
+ * character; it does not discuss the translation, the request, or what may be
+ * assisted with. Requiring the source not to say these things keeps the card
+ * about a translator, or a system prompt that mentions translating, from
+ * tripping it.
+ */
+const TASK_TALK =
+  /翻譯|翻译|譯成|译成|婉拒|拒絕|拒绝|無法協助|无法协助|內容政策|内容政策|使用政策|使用準則|指導方針|指导方针|很樂意|很乐意|樂意為您|乐意为您|translat|content polic|guidelines|as an\b ai\b|language model|happy to (?:help|assist)|assist with (?:this|that)/i;
+
+/**
+ * Biased towards flagging, deliberately.
+ *
+ * The two outcomes are not symmetrical. A section wrongly called a refusal is
+ * marked blocked and keeps its source, and costs one retry to put right. A
+ * refusal not recognised is written into the card over the entry it replaced,
+ * and there is no undo and no history — the draft holds one version — so the
+ * only copy of that entry is gone. Given that, an extra retry is cheap.
+ */
 function refusedToTranslate(source: string, output: string): boolean {
   if (!REFUSAL.test(output) || REFUSAL.test(source)) return false;
-  return output.length < REFUSAL_MAX_CHARS || output.length < source.length * REFUSAL_MAX_SHARE;
+  if (output.length < REFUSAL_MAX_CHARS) return true;
+  if (output.length < source.length * REFUSAL_MAX_SHARE) return true;
+  return TASK_TALK.test(output) && !TASK_TALK.test(source);
 }
 
 /** Strip a wrapper the model added despite being told not to. */
