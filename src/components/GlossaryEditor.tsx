@@ -345,12 +345,14 @@ export function GlossaryEditor({
                 if (!event.currentTarget.contains(event.relatedTarget)) setEditing(false);
               }}
             >
-              {shown.map(({ term, hits, total, index }) => (
+              {shown.map(({ term, hits, total, entryTitle, snippet, index }) => (
                 <TermRow
                   key={`${term.source}-${index}`}
                   term={term}
                   hits={hits}
                   total={total}
+                  entryTitle={entryTitle}
+                  snippet={snippet}
                   unapplied={unapplied.has(term.source)}
                   slipped={slipped.has(term.source)}
                   review={reviews.get(term.source)}
@@ -427,6 +429,8 @@ function TermRow({
   term,
   hits,
   total,
+  entryTitle,
+  snippet,
   unapplied,
   slipped,
   review,
@@ -438,8 +442,11 @@ function TermRow({
   onJump,
 }: {
   term: GlossaryTerm;
-  hits: { path: string; count: number }[];
+  hits: { path: string; label: string; count: number }[];
   total: number;
+  /** The entry this term keys and the first place it is used — what the model was told. */
+  entryTitle: string | undefined;
+  snippet: string | undefined;
   unapplied: boolean;
   /** The translation contains a simplified character. */
   slipped: boolean;
@@ -505,6 +512,11 @@ function TermRow({
         <span>{ORIGIN_LABELS[term.origin]}</span>
         <span>{KIND_LABELS[term.kind]}</span>
         <span className="tabular-nums">{total} 處</span>
+        {entryTitle && (
+          <span className="truncate text-dim" title={`這個詞是「${entryTitle}」這條世界書的關鍵字`}>
+            {entryTitle}
+          </span>
+        )}
         {slipped && (
           <span className="text-amber-300" title="譯名裡有簡體字">
             簡體
@@ -589,6 +601,21 @@ function TermRow({
             保留原文，不要翻譯
           </label>
 
+          {/*
+            The line the naming pass was given about this term, shown to the
+            person who has to decide whether to trust what came back. Judging
+            `parasite => 寄生體` against `parasite => 寄生蟲` takes the card in
+            your head otherwise, and nobody reading a 150-term list has that.
+          */}
+          {snippet && (
+            <div>
+              <span className="label text-xs">出現於</span>
+              <p className="rounded border border-line bg-surface px-2 py-1.5 text-xs leading-relaxed text-dim">
+                {snippet}
+              </p>
+            </div>
+          )}
+
           <div>
             <span className="label text-xs">出現位置</span>
             {hits.length === 0 ? (
@@ -602,8 +629,9 @@ function TermRow({
                     key={hit.path}
                     onClick={() => onJump(hit.path)}
                     className="rounded border border-line bg-surface px-2 py-1 text-xs text-gold hover:border-gold"
+                    title={hit.path}
                   >
-                    {hit.path}
+                    {hit.label}
                     <span className="ml-1 text-dim tabular-nums">×{hit.count}</span>
                   </button>
                 ))}

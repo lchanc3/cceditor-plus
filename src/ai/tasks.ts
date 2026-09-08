@@ -16,7 +16,10 @@ import {
   TERM_KINDS,
   TermKind,
   cardSections,
+  entryPaths,
+  entryTitles,
   parseSectionPath,
+  snippetFor,
   termsInText,
 } from '../glossary';
 import { parseJsonItems } from './json';
@@ -521,7 +524,6 @@ const DECIDE_BATCH_TERMS = 40;
 /** Reviewing carries one more line per term than naming does, but not enough more to split further. */
 const REVIEW_BATCH_TERMS = 40;
 /** Characters of surrounding text shown when asking for a translation. */
-const SNIPPET_WIDTH = 70;
 
 const EXTRACT_PROMPT = `你是一位協助翻譯的術語整理員。請從以下角色卡內容中，找出所有需要統一譯名的專有名詞。
 
@@ -691,54 +693,6 @@ export async function extractTerms(
 }
 
 /**
- * Which lorebook entry a term keys, by the entry's own name.
- *
- * This is the single most useful thing that can be said about a seeded term
- * and it was being thrown away. Every key `seedTerms` takes arrives with kind
- * `other`, so the listing said nothing but the word itself and seventy
- * characters of surrounding prose — and a bare `church` was duly translated as
- * a building on a card whose entry is called *Church of the Eternal Light*.
- * Naming the entry settles what the word is before any rule has to.
- */
-function entryTitles(fields: CardFields): Map<string, string> {
-  const seen = new Map<string, string | null>();
-
-  for (const entry of fields.character_book?.entries ?? []) {
-    const title = entry.comment?.trim();
-    if (!title) continue;
-    for (const key of [...entry.keys, ...(entry.secondary_keys ?? [])]) {
-      const folded = fold(key.trim());
-      if (folded === '') continue;
-      // A key on several entries names none of them, so it is dropped rather
-      // than attributed to whichever happened to come first. `cathedral` keys
-      // both the Order and the Cathedral on a real card.
-      const first = seen.get(folded);
-      seen.set(folded, first === undefined || first === title ? title : null);
-    }
-  }
-
-  const titles = new Map<string, string>();
-  for (const [key, title] of seen) if (title !== null) titles.set(key, title);
-  return titles;
-}
-
-/** The first place a term appears, with a little text either side of it. */
-function snippetFor(sections: CardSection[], source: string): string {
-  const needle = fold(source);
-
-  for (const section of sections) {
-    const at = fold(section.text).indexOf(needle);
-    if (at === -1) continue;
-    const start = Math.max(0, at - SNIPPET_WIDTH);
-    const end = Math.min(section.text.length, at + source.length + SNIPPET_WIDTH);
-    const body = section.text.slice(start, end).replace(/\s+/g, ' ').trim();
-    return `${start > 0 ? '…' : ''}${body}${end < section.text.length ? '…' : ''}`;
-  }
-
-  return '';
-}
-
-/**
  * The pending terms as families, so ones sharing a root travel together.
  *
  * Batches of forty are what let a 130-term card be named at all, but they also
@@ -821,9 +775,10 @@ function describeTerm(
   position: number,
   sections: CardSection[],
   titles: Map<string, string>,
+  paths: Map<string, string>,
   withCurrent = false,
 ): string {
-  const snippet = snippetFor(sections, term.source);
+  const snippet = snippetFor(sections, term.source, paths.get(fold(term.source)));
   const title = titles.get(fold(term.source));
 
   return [
@@ -853,6 +808,7 @@ export async function decideTranslations(
 
   const sections = cardSections(fields);
   const titles = entryTitles(fields);
+  const paths = entryPaths(fields);
   const settled = terms.filter(isDecided);
   const bySource = new Map(pending.map((term) => [fold(term.source), term]));
 
@@ -865,7 +821,7 @@ export async function decideTranslations(
     options.signal?.throwIfAborted();
 
     const listing = batch
-      .map((term, i) => describeTerm(term, i + 1, sections, titles))
+      .map((term, i) => describeTerm(term, i + 1, sections, titles, paths))
       .join('\n');
 
     const items = await chatJson<RawTerm>(
@@ -1001,6 +957,7 @@ export async function reviewTranslations(
 
   const sections = cardSections(fields);
   const titles = entryTitles(fields);
+  const paths = entryPaths(fields);
   const bySource = new Map(decided.map((term) => [fold(term.source), term]));
   // Built here rather than taken from the caller, so a caller cannot forget it
   // and leave the reviewer judging names with no idea what the card is.
@@ -1015,7 +972,7 @@ export async function reviewTranslations(
     options.signal?.throwIfAborted();
 
     const listing = batch
-      .map((term, i) => describeTerm(term, i + 1, sections, titles, true))
+      .map((term, i) => describeTerm(term, i + 1, sections, titles, paths, true))
       .join('\n');
 
     const items = await chatJson<RawIssue>(

@@ -23,8 +23,17 @@ export interface CardSection {
 
 export interface TermUsage {
   term: GlossaryTerm;
-  hits: { path: string; count: number }[];
+  hits: { path: string; label: string; count: number }[];
   total: number;
+  /**
+   * The context the naming and review passes are given about this term, so the
+   * person deciding whether to trust a 譯名 is reading what the model read.
+   * Without them a row says `lore:13 ×4`, and judging `parasite => 寄生體`
+   * against `parasite => 寄生蟲` needs the card in your head; with them the
+   * entry is named and the line beside it settles which one the word is.
+   */
+  entryTitle?: string;
+  snippet?: string;
 }
 
 const PLAIN_FIELDS = [
@@ -266,6 +275,91 @@ function countIn(text: string, term: GlossaryTerm): number {
   return count;
 }
 
+/** How much text either side of a term is enough to tell what it means. */
+const SNIPPET_WIDTH = 70;
+
+/**
+ * Which lorebook entry a term keys, by the entry's own name.
+ *
+ * This is the single most useful thing that can be said about a seeded term
+ * and it was being thrown away. Every key `seedTerms` takes arrives with kind
+ * `other`, so the listing said nothing but the word itself and seventy
+ * characters of surrounding prose — and a bare `church` was duly translated as
+ * a building on a card whose entry is called *Church of the Eternal Light*.
+ * Naming the entry settles what the word is before any rule has to.
+ */
+export function entryTitles(fields: CardFields): Map<string, string> {
+  const seen = new Map<string, string | null>();
+
+  for (const entry of fields.character_book?.entries ?? []) {
+    const title = entry.comment?.trim();
+    if (!title) continue;
+    for (const key of [...entry.keys, ...(entry.secondary_keys ?? [])]) {
+      const folded = fold(key.trim());
+      if (folded === '') continue;
+      // A key on several entries names none of them, so it is dropped rather
+      // than attributed to whichever happened to come first. `cathedral` keys
+      // both the Order and the Cathedral on a real card.
+      const first = seen.get(folded);
+      seen.set(folded, first === undefined || first === title ? title : null);
+    }
+  }
+
+  const titles = new Map<string, string>();
+  for (const [key, title] of seen) if (title !== null) titles.set(key, title);
+  return titles;
+}
+
+/**
+ * Which section a term keys, for quoting the term from the entry it belongs to.
+ *
+ * Same rule as `entryTitles`: a key on two entries points at neither.
+ */
+export function entryPaths(fields: CardFields): Map<string, string> {
+  const seen = new Map<string, string | null>();
+
+  (fields.character_book?.entries ?? []).forEach((entry, index) => {
+    const path = `lore:${index}`;
+    for (const key of [...entry.keys, ...(entry.secondary_keys ?? [])]) {
+      const folded = fold(key.trim());
+      if (folded === '') continue;
+      const first = seen.get(folded);
+      seen.set(folded, first === undefined || first === path ? path : null);
+    }
+  });
+
+  const paths = new Map<string, string>();
+  for (const [key, path] of seen) if (path !== null) paths.set(key, path);
+  return paths;
+}
+
+/**
+ * A place the term is used, with enough text either side to tell what it means.
+ *
+ * `preferPath` is the entry the term keys, and it is tried first because the
+ * first occurrence is not reliably the telling one. On a real card a term
+ * appeared first inside a status listing that named the word without using it,
+ * which settles nothing, while the entry it keys says what the word is in its
+ * opening line. Falls back to the first occurrence, since a term need not key
+ * anything.
+ */
+export function snippetFor(sections: CardSection[], source: string, preferPath?: string): string {
+  const needle = fold(source);
+  const preferred = sections.find((section) => section.path === preferPath);
+  const ordered = preferred ? [preferred, ...sections.filter((s) => s !== preferred)] : sections;
+
+  for (const section of ordered) {
+    const at = fold(section.text).indexOf(needle);
+    if (at === -1) continue;
+    const start = Math.max(0, at - SNIPPET_WIDTH);
+    const end = Math.min(section.text.length, at + source.length + SNIPPET_WIDTH);
+    const body = section.text.slice(start, end).replace(/\s+/g, ' ').trim();
+    return `${start > 0 ? '…' : ''}${body}${end < section.text.length ? '…' : ''}`;
+  }
+
+  return '';
+}
+
 /**
  * Where each term actually appears. Derived on demand rather than stored — the
  * card is edited between sessions, so a saved copy would be wrong by the time
@@ -273,18 +367,26 @@ function countIn(text: string, term: GlossaryTerm): number {
  */
 export function scanUsage(fields: CardFields, terms: GlossaryTerm[]): TermUsage[] {
   const sections = cardSections(fields);
+  const titles = entryTitles(fields);
+  const paths = entryPaths(fields);
 
   return terms.map((term) => {
-    const hits: { path: string; count: number }[] = [];
+    const hits: { path: string; label: string; count: number }[] = [];
     let total = 0;
     for (const section of sections) {
       const count = countIn(section.text, term);
       if (count > 0) {
-        hits.push({ path: section.path, count });
+        hits.push({ path: section.path, label: section.label, count });
         total += count;
       }
     }
-    return { term, hits, total };
+    return {
+      term,
+      hits,
+      total,
+      entryTitle: titles.get(fold(term.source)),
+      snippet: snippetFor(sections, term.source, paths.get(fold(term.source))) || undefined,
+    };
   });
 }
 

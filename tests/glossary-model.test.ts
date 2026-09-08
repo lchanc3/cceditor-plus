@@ -294,15 +294,75 @@ describe('scanUsage', () => {
     character_book: lore([{ keys: ['Emberwright'], content: 'A guild in Ashfall Keep.' }]),
   });
 
+  it('carries the context the naming pass was given', () => {
+    // The same entry title and snippet `describeTerm` puts in the prompt. Read
+    // in the glossary UI they are what lets somebody judge a 譯名 without
+    // already knowing the card: a word with an ordinary everyday sense is only
+    // obviously right or wrong next to the entry it keys.
+    const fields = card({
+      description: 'The ember is carried from the forge at first light.',
+      character_book: lore([{ keys: ['ember'], comment: 'Emberwright', content: 'x' }]),
+    });
+
+    const [ember] = scanUsage(fields, [term({ source: 'ember' })]);
+
+    expect(ember.entryTitle).toBe('Emberwright');
+    expect(ember.snippet).toContain('carried from the forge');
+    expect(ember.hits[0].label).toBe('角色描述');
+  });
+
+  it('quotes the term from the entry it keys, not from wherever it first appears', () => {
+    // The shape that sent this: a term whose first occurrence was a status
+    // listing naming the word without using it, which tells the reader nothing,
+    // while the entry it keys says what the word is in its opening line.
+    const fields = card({
+      first_mes: '► Ashfall Keep [ON]  ► Emberwright [ON]  ► Grand Maiden Elder [ON]',
+      character_book: lore([
+        {
+          keys: ['Emberwright'],
+          comment: '長老設定',
+          content: 'The Emberwright is a guild of smiths, not a single person.',
+        },
+      ]),
+    });
+
+    const [ember] = scanUsage(fields, [term({ source: 'Emberwright' })]);
+
+    expect(ember.snippet).toContain('guild of smiths');
+    expect(ember.snippet).not.toContain('[ON]');
+  });
+  it('leaves the context out when the card cannot supply it', () => {
+    // A key on two entries names neither, and a term nothing mentions has no
+    // first occurrence to quote. Both are absent rather than guessed at.
+    const fields = card({
+      character_book: lore([
+        { keys: ['cathedral'], comment: 'The Order', content: 'a' },
+        { keys: ['cathedral'], comment: 'The Cathedral', content: 'b' },
+      ]),
+    });
+
+    const [shared, absent] = scanUsage(fields, [
+      term({ source: 'cathedral' }),
+      term({ source: 'Emberwright' }),
+    ]);
+
+    expect(shared.entryTitle).toBeUndefined();
+    expect(absent.snippet).toBeUndefined();
+  });
   it('reports each section a term appears in, with counts', () => {
     const [elder, keep] = scanUsage(fields, [
       term({ source: 'Grand Maiden Elder' }),
       term({ source: 'Ashfall Keep' }),
     ]);
 
-    expect(elder.hits).toEqual([{ path: 'description', count: 2 }]);
+    // Compared on path and count: the label beside them is the section's own,
+    // asserted where it is the point rather than in every usage test.
+    const where = (usage: { hits: { path: string; count: number }[] }) =>
+      usage.hits.map(({ path, count }) => ({ path, count }));
+
+    expect(where(elder)).toEqual([{ path: 'description', count: 2 }]);
     expect(elder.total).toBe(2);
-    expect(keep.hits).toEqual([
+    expect(where(keep)).toEqual([
       { path: 'first_mes', count: 1 },
       { path: 'lore:0', count: 1 },
     ]);
@@ -320,7 +380,7 @@ describe('scanUsage', () => {
       term({ source: 'Grand Maiden Elder', aliases: ['Ashfall Keep'] }),
     ]);
     // Two of the source term in description, one alias each in first_mes and lore:0.
-    expect(elder.hits).toEqual([
+    expect(elder.hits.map(({ path, count }) => ({ path, count }))).toEqual([
       { path: 'description', count: 2 },
       { path: 'first_mes', count: 1 },
       { path: 'lore:0', count: 1 },
