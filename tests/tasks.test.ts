@@ -472,7 +472,12 @@ describe('decideTranslations', () => {
 
     // This is what stops a second run drifting away from the first.
     expect(system(calls[0])).toContain('Grand Maiden Elder => 聖女長老');
-    expect(system(calls[0])).toContain('Kaelen => 保留原文');
+
+    // A kept term is named in its own list rather than mapped to the words
+    // '保留原文' — shown as a mapping, it gets copied back as one.
+    expect(system(calls[0])).toContain('【維持原文的詞');
+    expect(system(calls[0])).toContain('Kaelen');
+    expect(system(calls[0])).not.toContain('Kaelen =>');
 
     // Only the undecided term is asked about. It is checked against the numbered
     // list rather than the whole message, because a decided term can still show
@@ -496,6 +501,22 @@ describe('decideTranslations', () => {
     expect(decided.keepOriginal).toBe(true);
     expect(decided.target).toBe('');
     expect(decided.origin).toBe('ai');
+  });
+
+  it('reads a 譯名 that is really the keep-original instruction as the flag', async () => {
+    // The model answers with the phrase it keeps being shown instead of setting
+    // `keep`. Taken at face value it reaches the prose as `Emberwright => 保留原文`
+    // and the lorebook as a trigger nobody will ever type.
+    const { provider } = fake('{"terms":[{"s":"Emberwright","t":"保留原文"}]}');
+    const [decided] = await decideTranslations(
+      provider,
+      fields,
+      [term({ source: 'Emberwright' })],
+      options,
+    );
+
+    expect(decided.keepOriginal).toBe(true);
+    expect(decided.target).toBe('');
   });
 
   it('drops terms that were never asked about', async () => {

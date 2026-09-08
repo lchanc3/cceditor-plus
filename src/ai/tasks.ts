@@ -537,15 +537,31 @@ const EXTRACT_PROMPT = `你是一位協助翻譯的術語整理員。請從以�
 {"terms":[{"s":"原文詞","k":"person|place|org|item|title|concept|other","a":["其他寫法"]}]}`;
 
 const decidePrompt = (targetLang: string, settled: GlossaryTerm[]): string => {
-  const known =
-    settled.length === 0
+  const translated = settled.filter((term) => !term.keepOriginal);
+  const kept = settled.filter((term) => term.keepOriginal);
+
+  /**
+   * Two lists, because one of them was being copied. Rendering a kept term as
+   * `Emberwright => 保留原文` puts the flag in the exact shape this pass answers in,
+   * and a real card came back with `{"s":"Emberwright","t":"保留原文"}` — the
+   * instruction typed into the 譯名 field. Rule 5 offers `keep`; the example
+   * sitting beside it won. Kept terms carry no arrow now, so there is nothing
+   * to imitate.
+   */
+  const known = [
+    translated.length === 0
       ? ''
       : `
 
 【已決定的譯名 — 必須沿用，不可更動，也不要重複輸出】
-${settled
-  .map((term) => (term.keepOriginal ? `${term.source} => 保留原文` : `${term.source} => ${term.target}`))
-  .join('\n')}`;
+${translated.map((term) => `${term.source} => ${term.target}`).join('\n')}`,
+    kept.length === 0
+      ? ''
+      : `
+
+【維持原文的詞 — 不要翻譯，也不要重複輸出】
+${kept.map((term) => term.source).join('、')}`,
+  ].join('');
 
   return `你是一位專業的角色設定翻譯，正在為一張角色卡決定專有名詞的統一譯名。目標語言是${targetLang}。
 
@@ -578,6 +594,24 @@ const asKind = (value: unknown): TermKind =>
   TERM_KINDS.includes(value as TermKind) ? (value as TermKind) : 'other';
 
 const fold = (text: string): string => text.toLowerCase();
+
+/** Ways a model says "leave it alone" when it was asked for a translation. */
+const KEEP_ORIGINAL_ANSWERS = new Set([
+  '保留原文',
+  '保持原文',
+  '維持原文',
+  '维持原文',
+  '保留英文',
+  '不翻譯',
+  '不譯',
+  '不译',
+  'keep original',
+  'keep as is',
+  'original',
+]);
+
+const isKeepAnswer = (text: string): boolean =>
+  KEEP_ORIGINAL_ANSWERS.has(text.toLowerCase().split(/[，,（(]/)[0].trim());
 
 /** Group sections so each request carries roughly `limit` characters. */
 function batchSections(sections: CardSection[], limit: number): CardSection[][] {
@@ -851,7 +885,12 @@ export async function decideTranslations(
       // is dropped rather than quietly added to the glossary.
       if (!term || seen.has(fold(term.source))) continue;
 
-      const keepOriginal = item.keep === true;
+      // A model that answers the flag instead of setting it. The reuse list no
+      // longer shows it the phrase, but the pinned glossary block and a style
+      // note can say it just as loudly — and a 譯名 that reads "keep the
+      // original" was never a 譯名. Left unread it reaches the prose as
+      // `Emberwright => 保留原文` and the lorebook as a trigger nobody will type.
+      const keepOriginal = item.keep === true || isKeepAnswer(asText(item.t));
       const target = asText(item.t);
       if (!keepOriginal && target === '') continue;
 
