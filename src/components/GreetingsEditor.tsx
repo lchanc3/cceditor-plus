@@ -2,7 +2,7 @@ import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 
 import type { TaskStatus } from '../hooks/useTranslate';
 import { formatCount } from '../lib/utils';
-import { Banner, EmptyHint, TranslateButton } from './ui';
+import { Banner, EmptyHint, RevertButton, TranslateButton } from './ui';
 
 export function GreetingsEditor({
   greetings,
@@ -14,6 +14,8 @@ export function GreetingsEditor({
   onMove,
   onTranslate,
   onCancel,
+  reverts,
+  onRevert,
 }: {
   greetings: string[];
   status: Record<string, TaskStatus>;
@@ -24,6 +26,9 @@ export function GreetingsEditor({
   onMove: (index: number, direction: -1 | 1) => void;
   onTranslate: (index: number) => void;
   onCancel: (index: number) => void;
+  /** By section path, for the sections a translation has written to. */
+  reverts?: Record<string, { reverted: boolean }>;
+  onRevert?: (path: string) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -50,6 +55,12 @@ export function GreetingsEditor({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-bold text-dim">#{index + 1}</span>
                   <div className="flex items-center gap-1">
+                    {reverts?.[key] && onRevert && (
+                      <RevertButton
+                        reverted={reverts[key].reverted}
+                        onRevert={() => onRevert(key)}
+                      />
+                    )}
                     <TranslateButton
                       status={status[key]}
                       onTranslate={() => onTranslate(index)}

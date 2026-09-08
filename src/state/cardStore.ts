@@ -21,18 +21,22 @@ import {
 } from '../glossary';
 
 /**
- * The card as it stood before the last translation wrote over it.
+ * The other version of one section: what pressing revert would put back.
  *
- * One point rather than a stack, because one event destroys work here: a
- * translation writing into a field over the only copy of what was there. A
- * refusal or an echoed source looks enough like a translation to be saved, and
- * the draft holds a single version, so without this the entry is simply gone. A
- * general edit history is a different and much larger feature.
+ * Per section rather than per card, because that is the shape of the problem. A
+ * run of twenty sections comes back with nineteen good ones and a refusal
+ * written over the twentieth, and what is wanted is that one entry back, not
+ * the other nineteen thrown away.
+ *
+ * A swap rather than a one-way restore: reverting stores whatever was on the
+ * card as the new `other`, so pressing again brings the translation back and a
+ * mis-click costs nothing. It also means an edit made after the run is not lost
+ * by reverting — it becomes the thing revert would return to.
  */
-export interface UndoPoint {
-  model: CardModel;
-  /** What would be undone, for the button to name. */
-  label: string;
+export interface SectionRevert {
+  other: string;
+  /** Whether the card currently shows the pre-translation text, for the label. */
+  reverted: boolean;
 }
 
 export interface CardState {
@@ -51,20 +55,24 @@ export interface CardState {
    * saves the viewer from reparsing the extensions object on every render.
    */
   glossary: TranslationMeta;
-  /** Set before a translation run; cleared by taking it, or by loading a card. */
-  undo: UndoPoint | null;
+  /** By section path. Written when a translation lands; dropped with the card. */
+  reverts: Record<string, SectionRevert>;
 }
 
 export type KeyField = 'keys' | 'secondary_keys';
 
 export type CardAction =
   | { type: 'load'; model: CardModel; imageBytes?: Uint8Array; origin: CardOrigin; warnings: string[] }
-  | { type: 'restore'; model: CardModel; imageBytes?: Uint8Array; undo?: UndoPoint | null }
-  | { type: 'snapshot'; label: string }
-  | { type: 'undo' }
+  | {
+      type: 'restore';
+      model: CardModel;
+      imageBytes?: Uint8Array;
+      reverts?: Record<string, SectionRevert>;
+    }
+  | { type: 'revert'; path: string }
   | { type: 'setField'; key: keyof CardFields; value: CardFields[keyof CardFields] }
   /** Write back to whatever `cardSections` called `path`. Unknown paths are ignored. */
-  | { type: 'section.set'; path: string; value: string }
+  | { type: 'section.set'; path: string; value: string; previous?: string }
   | { type: 'greeting.set'; index: number; value: string }
   | { type: 'greeting.add' }
   | { type: 'greeting.remove'; index: number }
@@ -97,7 +105,7 @@ export const initialCardState: CardState = {
   warnings: [],
   dirty: false,
   glossary: createTranslationMeta(),
-  undo: null,
+  reverts: {},
 };
 
 /** Splitting on both ASCII and full-width separators; card authors use either. */
@@ -162,6 +170,53 @@ function appendKeys(entry: LorebookEntry, field: KeyField, keys: string[]): Lore
  * The one place the glossary changes, so the working copy and the copy on the
  * card cannot drift apart.
  */
+/**
+ * One section's text, or null when the path names nothing on this card.
+ *
+ * Shared by the write and the revert so they cannot disagree about what a path
+ * points at — a revert that read a different field than the translation wrote
+ * would put the wrong text in the wrong place.
+ */
+export function sectionText(fields: CardFields, path: string): string | null {
+  const target = parseSectionPath(path);
+  if (!target) return null;
+
+  if (target.kind === 'field') {
+    const value = fields[target.key];
+    return typeof value === 'string' ? value : null;
+  }
+  if (target.kind === 'greeting') {
+    return fields.alternate_greetings[target.index] ?? null;
+  }
+  return fields.character_book?.entries[target.index]?.content ?? null;
+}
+
+/** Write one section by path, leaving the revert record to the caller. */
+function setSection(state: CardState, path: string, value: string): CardState {
+  const target = parseSectionPath(path);
+  if (!target || !state.model) return state;
+
+  if (target.kind === 'field') {
+    return withFields(state, { [target.key]: value } as Partial<CardFields>);
+  }
+
+  if (target.kind === 'greeting') {
+    const greetings = state.model.fields.alternate_greetings;
+    // A path can outlive the entry it named, so an index that no longer exists
+    // is dropped rather than growing a sparse array.
+    if (target.index < 0 || target.index >= greetings.length) return state;
+    const next = [...greetings];
+    next[target.index] = value;
+    return withFields(state, { alternate_greetings: next });
+  }
+
+  const entries = state.model.fields.character_book?.entries ?? [];
+  if (target.index < 0 || target.index >= entries.length) return state;
+  return withEntries(state, (current) =>
+    current.map((entry, i) => (i === target.index ? { ...entry, content: value } : entry)),
+  );
+}
+
 function withGlossary(state: CardState, meta: TranslationMeta): CardState {
   if (!state.model) return state;
   return {
@@ -191,9 +246,9 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         // Reading the glossary back off the card is what stops the names
         // drifting between one editing session and the next.
         glossary: hydrate(action.model),
-        // A point into the card that was open before this one would restore
-        // the wrong card entirely.
-        undo: null,
+        // Paths into the card that was open before this one would put its text
+        // into a card it never belonged to.
+        reverts: {},
       };
 
     case 'restore':
@@ -206,53 +261,42 @@ export function cardReducer(state: CardState, action: CardAction): CardState {
         glossary: hydrate(action.model),
         // Carried through the draft, so closing the tab after a bad run is not
         // itself the thing that makes it permanent.
-        undo: action.undo ?? null,
+        reverts: action.reverts ?? {},
       };
 
-    case 'snapshot':
-      // Replacing whatever was there is deliberate: the point anybody wants
-      // back is the one from the run they just watched.
-      return state.model ? { ...state, undo: { model: state.model, label: action.label } } : state;
+    case 'revert': {
+      const point = state.reverts[action.path];
+      if (!state.model || !point) return state;
 
-    case 'undo':
-      if (!state.undo) return state;
+      const current = sectionText(state.model.fields, action.path);
+      if (current === null) return state;
+
       return {
-        ...state,
-        model: state.undo.model,
-        dirty: true,
-        glossary: hydrate(state.undo.model),
-        undo: null,
+        ...setSection(state, action.path, point.other),
+        reverts: {
+          ...state.reverts,
+          // What was on the card becomes the way back, so this is reversible
+          // however many times it is pressed.
+          [action.path]: { other: current, reverted: !point.reverted },
+        },
       };
+    }
 
     case 'setField':
       return withFields(state, { [action.key]: action.value } as Partial<CardFields>);
 
     case 'section.set': {
-      // Resolving the path here rather than in the component keeps the mapping
-      // testable — whole-card translation is then just a loop over
-      // `cardSections` and a dispatch per result.
-      const target = parseSectionPath(action.path);
-      if (!target || !state.model) return state;
+      const written = setSection(state, action.path, action.value);
+      // Unchanged means the path named nothing, so there is nothing to offer
+      // back either.
+      if (written === state || action.previous === undefined) return written;
 
-      if (target.kind === 'field') {
-        return withFields(state, { [target.key]: action.value } as Partial<CardFields>);
-      }
-
-      if (target.kind === 'greeting') {
-        const greetings = state.model.fields.alternate_greetings;
-        // A path can outlive the entry it named, so an index that no longer
-        // exists is dropped rather than growing a sparse array.
-        if (target.index < 0 || target.index >= greetings.length) return state;
-        const next = [...greetings];
-        next[target.index] = action.value;
-        return withFields(state, { alternate_greetings: next });
-      }
-
-      const entries = state.model.fields.character_book?.entries ?? [];
-      if (target.index < 0 || target.index >= entries.length) return state;
-      return withEntries(state, (current) =>
-        current.map((entry, i) => (i === target.index ? { ...entry, content: action.value } : entry)),
-      );
+      // Only a translation passes `previous`. A typed edit does not, and must
+      // not overwrite the way back to what was there before the run.
+      return {
+        ...written,
+        reverts: { ...written.reverts, [action.path]: { other: action.previous, reverted: false } },
+      };
     }
 
     case 'greeting.set': {
@@ -392,10 +436,12 @@ export function useCardStore() {
     () => ({
       load: (model: CardModel, origin: CardOrigin, warnings: string[], imageBytes?: Uint8Array) =>
         dispatch({ type: 'load', model, origin, warnings, imageBytes }),
-      restore: (model: CardModel, imageBytes?: Uint8Array, undo?: UndoPoint | null) =>
-        dispatch({ type: 'restore', model, imageBytes, undo }),
-      snapshot: (label: string) => dispatch({ type: 'snapshot', label }),
-      undo: () => dispatch({ type: 'undo' }),
+      restore: (
+        model: CardModel,
+        imageBytes?: Uint8Array,
+        reverts?: Record<string, SectionRevert>,
+      ) => dispatch({ type: 'restore', model, imageBytes, reverts }),
+      revert: (path: string) => dispatch({ type: 'revert', path }),
       setField: <K extends keyof CardFields>(key: K, value: CardFields[K]) =>
         dispatch({ type: 'setField', key, value }),
       startBlank: () => dispatch({ type: 'load', model: createEmptyCard(), origin: 'json', warnings: [] }),

@@ -8,7 +8,7 @@
  */
 
 import type { CardModel } from '../card';
-import type { UndoPoint } from '../state/cardStore';
+import type { SectionRevert } from '../state/cardStore';
 
 const DB_NAME = 'cceditor-plus';
 const STORE = 'draft';
@@ -19,15 +19,13 @@ export interface Draft {
   imageBytes?: Uint8Array;
   savedAt: number;
   /**
-   * What the last translation wrote over.
+   * What the last translation wrote over, by section.
    *
    * Kept here rather than in memory alone for the case it exists for: a run
-   * that damaged the card, noticed after the tab was closed and reopened. An
-   * undo that does not survive that is an undo for the easy half of the
-   * problem. The artwork is not duplicated — the point holds a model, and the
-   * image is whatever the draft already carries.
+   * that damaged one entry, noticed after the tab was closed and reopened. A
+   * revert that does not survive that covers only the easy half of the problem.
    */
-  undo?: UndoPoint;
+  reverts?: Record<string, SectionRevert>;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -63,12 +61,12 @@ async function withStore<T>(
 export async function saveDraft(
   model: CardModel,
   imageBytes?: Uint8Array,
-  undo?: UndoPoint | null,
+  reverts?: Record<string, SectionRevert>,
 ): Promise<void> {
   try {
     const draft: Draft = { model, savedAt: Date.now() };
     if (imageBytes) draft.imageBytes = imageBytes;
-    if (undo) draft.undo = undo;
+    if (reverts && Object.keys(reverts).length > 0) draft.reverts = reverts;
     await withStore('readwrite', (store) => store.put(draft, KEY));
   } catch {
     /* private browsing, quota, or no IndexedDB */

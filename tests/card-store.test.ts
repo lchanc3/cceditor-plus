@@ -357,91 +357,108 @@ describe('lore.addKeyList', () => {
   });
 });
 
-describe('the undo point', () => {
+describe('reverting one section', () => {
+  const ORIGINAL = 'The Grand Maiden Elder rules Ashfall Keep.';
+
+  /** What a translation does: writes the result and hands over what it replaced. */
+  const translated = (value: string): CardAction => ({
+    type: 'section.set',
+    path: 'description',
+    value,
+    previous: ORIGINAL,
+  });
+
   it('puts back what a translation wrote over', () => {
-    const state = run(
-      loaded(worldCard()),
-      { type: 'snapshot', label: '整卡翻譯' },
-      { type: 'section.set', path: 'description', value: '模型婉拒了這次請求。' },
-    );
+    const state = run(loaded(worldCard()), translated('很抱歉，我無法翻譯此內容。'));
+    expect(state.model?.fields.description).toBe('很抱歉，我無法翻譯此內容。');
 
-    expect(state.model?.fields.description).toBe('模型婉拒了這次請求。');
-
-    const back = cardReducer(state, { type: 'undo' });
-    expect(back.model?.fields.description).toBe('The Grand Maiden Elder rules Ashfall Keep.');
+    const back = cardReducer(state, { type: 'revert', path: 'description' });
+    expect(back.model?.fields.description).toBe(ORIGINAL);
+    expect(back.reverts.description.reverted).toBe(true);
   });
 
-  it('restores the glossary the card was carrying at the time', () => {
-    // The names live on the card, so putting the card back has to put them back
-    // too — otherwise the working copy and the card drift apart, which is the
-    // one thing the rest of this reducer is built to prevent.
+  it('swaps, so pressing it again brings the translation back', () => {
+    // The point of a swap over a restore: a mis-click costs nothing.
     const state = run(
       loaded(worldCard()),
-      { type: 'glossary.addTerm', term: createTerm({ source: 'Ashfall Keep', target: '燼落堡' }) },
-      { type: 'snapshot', label: '整卡翻譯' },
-      { type: 'glossary.addTerm', term: createTerm({ source: 'Emberwright', target: '燼匠' }) },
+      translated('燼落堡由聖女長老統治。'),
+      { type: 'revert', path: 'description' },
+      { type: 'revert', path: 'description' },
     );
 
-    expect(state.glossary.glossary).toHaveLength(2);
-
-    const back = cardReducer(state, { type: 'undo' });
-    expect(back.glossary.glossary.map((t) => t.source)).toEqual(['Ashfall Keep']);
-    expect(readTranslationMeta(back.model!.fields)?.glossary).toHaveLength(1);
+    expect(state.model?.fields.description).toBe('燼落堡由聖女長老統治。');
+    expect(state.reverts.description.reverted).toBe(false);
   });
 
-  it('is spent once it is taken', () => {
-    // Not a stack. Taking it twice would put back a card from further away than
-    // anyone asked for.
+  it('keeps an edit made after the translation as the way forward', () => {
+    // Reverting must not be a way to lose work either. Whatever is on the card
+    // when revert is pressed becomes what pressing it again returns to.
     const state = run(
       loaded(worldCard()),
-      { type: 'snapshot', label: '整卡翻譯' },
-      { type: 'section.set', path: 'description', value: 'x' },
-      { type: 'undo' },
+      translated('燼落堡由聖女長老統治。'),
+      { type: 'section.set', path: 'description', value: '燼落堡由聖女長老掌管。' },
+      { type: 'revert', path: 'description' },
     );
 
-    expect(state.undo).toBeNull();
-    expect(cardReducer(state, { type: 'undo' })).toBe(state);
+    expect(state.model?.fields.description).toBe(ORIGINAL);
+    expect(cardReducer(state, { type: 'revert', path: 'description' }).model?.fields.description).toBe(
+      '燼落堡由聖女長老掌管。',
+    );
   });
 
-  it('keeps only the most recent point', () => {
+  it('is recorded only by a translation, not by typing', () => {
+    const typed = run(loaded(worldCard()), {
+      type: 'section.set',
+      path: 'description',
+      value: 'typed by hand',
+    });
+
+    expect(typed.reverts).toEqual({});
+    expect(cardReducer(typed, { type: 'revert', path: 'description' })).toBe(typed);
+  });
+
+  it('holds one section without touching the others', () => {
+    // The reason this is per section: a run of many sections comes back with
+    // one bad one, and that one is what needs undoing.
     const state = run(
       loaded(worldCard()),
-      { type: 'snapshot', label: '翻譯欄位' },
-      { type: 'section.set', path: 'description', value: 'first' },
-      { type: 'snapshot', label: '整卡翻譯' },
-      { type: 'section.set', path: 'description', value: 'second' },
-      { type: 'undo' },
+      translated('譯文一'),
+      { type: 'section.set', path: 'lore:0', value: '譯文二', previous: '長老設定原文' },
+      { type: 'revert', path: 'lore:0' },
     );
 
-    expect(state.model?.fields.description).toBe('first');
+    expect(state.model?.fields.description).toBe('譯文一');
+    expect(state.model?.fields.character_book?.entries[0].content).toBe('長老設定原文');
   });
 
-  it('does nothing without a card, and is dropped when one is opened', () => {
-    expect(cardReducer(initialCardState, { type: 'snapshot', label: 'x' }).undo).toBeNull();
-
-    // A point into the previous card would restore the wrong card entirely.
+  it('drops the records when another card is opened', () => {
+    // Paths into the previous card would put its text into this one.
     const state = run(
       loaded(worldCard()),
-      { type: 'snapshot', label: '整卡翻譯' },
+      translated('x'),
       { type: 'load', model: createEmptyCard(), origin: 'json', warnings: [] },
     );
-    expect(state.undo).toBeNull();
+    expect(state.reverts).toEqual({});
   });
 
   it('comes back with a restored draft', () => {
     // The case it exists for: the run went wrong, the tab was closed, and the
     // card is reopened from the draft.
-    const before = worldCard();
-    const damaged = run(loaded(before), { type: 'section.set', path: 'description', value: 'x' }).model!;
+    const damaged = run(loaded(worldCard()), translated('很抱歉。')).model!;
 
     const state = cardReducer(initialCardState, {
       type: 'restore',
       model: damaged,
-      undo: { model: before, label: '整卡翻譯' },
+      reverts: { description: { other: ORIGINAL, reverted: false } },
     });
 
-    expect(cardReducer(state, { type: 'undo' }).model?.fields.description).toBe(
-      'The Grand Maiden Elder rules Ashfall Keep.',
+    expect(cardReducer(state, { type: 'revert', path: 'description' }).model?.fields.description).toBe(
+      ORIGINAL,
     );
+  });
+
+  it('ignores a path that names nothing on this card', () => {
+    const state = run(loaded(worldCard()), translated('x'));
+    expect(cardReducer(state, { type: 'revert', path: 'lore:99' })).toBe(state);
   });
 });

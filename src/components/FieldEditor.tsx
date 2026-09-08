@@ -1,6 +1,6 @@
 import type { TaskStatus } from '../hooks/useTranslate';
 import { formatCount } from '../lib/utils';
-import { Banner, TranslateButton } from './ui';
+import { Banner, RevertButton, TranslateButton } from './ui';
 
 export function FieldEditor({
   title,
@@ -12,6 +12,8 @@ export function FieldEditor({
   onChange,
   onTranslate,
   onCancel,
+  revert,
+  onRevert,
   minRows = 12,
 }: {
   title: string;
@@ -23,6 +25,9 @@ export function FieldEditor({
   onChange: (value: string) => void;
   onTranslate: () => void;
   onCancel: () => void;
+  /** Present once a translation has written here, and there is a way back. */
+  revert?: { reverted: boolean };
+  onRevert?: () => void;
   minRows?: number;
 }) {
   return (
@@ -32,13 +37,18 @@ export function FieldEditor({
           <h3 className="text-sm font-bold tracking-wide text-gold">{title}</h3>
           {hint && <p className="mt-1 text-xs text-dim">{hint}</p>}
         </div>
-        <TranslateButton
-          status={status}
-          onTranslate={onTranslate}
-          onCancel={onCancel}
-          disabled={value.trim() === ''}
-          label="一鍵翻譯"
-        />
+        <div className="flex items-center gap-1.5">
+          {revert && onRevert && (
+            <RevertButton reverted={revert.reverted} onRevert={onRevert} />
+          )}
+          <TranslateButton
+            status={status}
+            onTranslate={onTranslate}
+            onCancel={onCancel}
+            disabled={value.trim() === ''}
+            label="一鍵翻譯"
+          />
+        </div>
       </header>
 
       {error && <Banner tone="error">{error}</Banner>}

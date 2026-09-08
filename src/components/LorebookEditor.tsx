@@ -5,7 +5,7 @@ import type { Lorebook, LorebookEntry } from '../card';
 import type { TaskStatus } from '../hooks/useTranslate';
 import type { KeyField } from '../state/cardStore';
 import { cn } from '../lib/utils';
-import { Banner, EmptyHint, TranslateButton } from './ui';
+import { Banner, EmptyHint, RevertButton, TranslateButton } from './ui';
 
 export function LorebookEditor({
   book,
@@ -19,6 +19,8 @@ export function LorebookEditor({
   onRemoveKey,
   onTranslate,
   onCancel,
+  reverts,
+  onRevert,
 }: {
   book: Lorebook | undefined;
   status: Record<string, TaskStatus>;
@@ -29,6 +31,9 @@ export function LorebookEditor({
   onPatch: (index: number, patch: Partial<LorebookEntry>) => void;
   onAddKeys: (index: number, field: KeyField, raw: string) => void;
   onRemoveKey: (index: number, field: KeyField, keyIndex: number) => void;
+  /** By section path, for the sections a translation has written to. */
+  reverts?: Record<string, { reverted: boolean }>;
+  onRevert?: (path: string) => void;
   onTranslate: (index: number) => void;
   onCancel: (index: number) => void;
 }) {
@@ -77,6 +82,8 @@ export function LorebookEditor({
               onRemoveKey={(field, keyIndex) => onRemoveKey(index, field, keyIndex)}
               onTranslate={() => onTranslate(index)}
               onCancel={() => onCancel(index)}
+              revert={reverts?.[`lore:${index}`]}
+              onRevert={onRevert && (() => onRevert(`lore:${index}`))}
             />
           ))}
         </ul>
@@ -96,6 +103,8 @@ function EntryCard({
   onRemoveKey,
   onTranslate,
   onCancel,
+  revert,
+  onRevert,
 }: {
   index: number;
   entry: LorebookEntry;
@@ -107,6 +116,8 @@ function EntryCard({
   onRemoveKey: (field: KeyField, keyIndex: number) => void;
   onTranslate: () => void;
   onCancel: () => void;
+  revert?: { reverted: boolean };
+  onRevert?: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -131,6 +142,7 @@ function EntryCard({
         </div>
 
         <div className="flex items-center gap-1">
+          {revert && onRevert && <RevertButton reverted={revert.reverted} onRevert={onRevert} />}
           <TranslateButton
             status={status}
             onTranslate={onTranslate}

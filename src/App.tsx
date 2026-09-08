@@ -1,4 +1,4 @@
-import { Download, Languages, Loader2, RotateCcw, Settings, Sparkles, Undo2 } from 'lucide-react';
+import { Download, Languages, Loader2, RotateCcw, Settings, Sparkles } from 'lucide-react';
 import { ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AISettings, TermReview, loadSettings, saveSettings } from './ai';
@@ -45,7 +45,7 @@ import { Banner } from './components/ui';
 import { CARD_KEY, useTranslate } from './hooks/useTranslate';
 import { clearDraft, loadDraft, saveDraft } from './lib/draft';
 import { downloadText } from './lib/download';
-import { useCardStore, type UndoPoint } from './state/cardStore';
+import { useCardStore, type SectionRevert } from './state/cardStore';
 
 /** Shown in the footer to satisfy AGPL-3.0 section 13. */
 const SOURCE_URL = 'https://github.com/lchanc3/cceditor-plus';
@@ -86,7 +86,7 @@ export default function App() {
   const [draftOffer, setDraftOffer] = useState<{
     model: CardModel;
     imageBytes?: Uint8Array;
-    undo?: UndoPoint;
+    reverts?: Record<string, SectionRevert>;
   } | null>(
     null,
   );
@@ -137,7 +137,7 @@ export default function App() {
   useEffect(() => {
     void loadDraft().then((draft) => {
       if (draft?.model?.fields?.name !== undefined) {
-        setDraftOffer({ model: draft.model, imageBytes: draft.imageBytes, undo: draft.undo });
+        setDraftOffer({ model: draft.model, imageBytes: draft.imageBytes, reverts: draft.reverts });
       }
     });
   }, []);
@@ -147,10 +147,10 @@ export default function App() {
     if (!model || !state.dirty) return;
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
-      void saveDraft(model, imageBytes ?? undefined, state.undo);
+      void saveDraft(model, imageBytes ?? undefined, state.reverts);
     }, 800);
     return () => window.clearTimeout(saveTimer.current);
-  }, [model, imageBytes, state.dirty, state.undo]);
+  }, [model, imageBytes, state.dirty, state.reverts]);
 
   // ---- file handling -----------------------------------------------------
 
@@ -272,27 +272,14 @@ export default function App() {
     [checkApplied, inspect, model],
   );
 
-  /**
-   * Put the card back as it stood before the last translation.
-   *
-   * The report goes with it: it describes a run whose results are no longer on
-   * the card, and leaving it up invites retrying sections that no longer say
-   * what it says they say.
-   */
-  const undoTranslation = useCallback(() => {
-    actions.undo();
-    setReport(null);
-  }, [actions]);
-
   const translateField = useCallback(
     async (key: keyof CardFields) => {
       if (!model) return;
       const current = model.fields[key];
       if (typeof current !== 'string') return;
-      actions.snapshot('翻譯欄位');
       const result = await translate.translate(key as string, current);
       if (result === null) return;
-      setField(key, result as CardFields[typeof key]);
+      dispatch({ type: 'section.set', path: key as string, value: result, previous: current });
       settle(key as string, current, result);
     },
     [model, setField, settle, translate],
@@ -302,10 +289,9 @@ export default function App() {
     async (index: number) => {
       if (!model) return;
       const source = model.fields.alternate_greetings[index];
-      actions.snapshot('翻譯開場白');
       const result = await translate.translate(`greeting:${index}`, source);
       if (result === null) return;
-      dispatch({ type: 'greeting.set', index, value: result });
+      dispatch({ type: 'section.set', path: `greeting:${index}`, value: result, previous: source });
       settle(`greeting:${index}`, source, result);
     },
     [dispatch, model, settle, translate],
@@ -357,8 +343,6 @@ export default function App() {
 
       const key = `lore:${index}`;
 
-      actions.snapshot('翻譯世界書條目');
-
       // Names first, then the text, then the keys — the same order the
       // whole-card run uses, so this entry's key and its prose come from one
       // decision rather than from two independent translations.
@@ -372,7 +356,7 @@ export default function App() {
 
       // Written through the same action the whole-card run uses, so both paths
       // get one set of rules about what may be appended and what is a repeat.
-      dispatch({ type: 'lore.patch', index, patch: { content } });
+      dispatch({ type: 'section.set', path: key, value: content, previous: entry.content });
       if (keys.length > 0) dispatch({ type: 'lore.addKeyList', index, field: 'keys', keys });
       if (secondary.length > 0) {
         dispatch({ type: 'lore.addKeyList', index, field: 'secondary_keys', keys: secondary });
@@ -388,10 +372,9 @@ export default function App() {
       setTranslateOpen(false);
 
       // Captured before anything is written, since translating in place
-      // destroys the source the checks need. The undo point is the same idea
-      // one level up: what the checks cannot judge, a person still can, and
-      // only if the card they are judging still exists.
-      actions.snapshot('整卡翻譯');
+      // destroys the source the checks need. It is handed to the store as well,
+      // so each section keeps a way back — what the checks cannot judge, a
+      // person still can, and only while the text they are judging survives.
       const before = new Map(cardSections(model.fields).map((s) => [s.path, s.text]));
       const entries = model.fields.character_book?.entries ?? [];
       const inScope = entries.filter((_, index) => only.includes(`lore:${index}`));
@@ -409,7 +392,7 @@ export default function App() {
         if (result.text === undefined) continue;
         const source = before.get(result.path) ?? '';
 
-        dispatch({ type: 'section.set', path: result.path, value: result.text });
+        dispatch({ type: 'section.set', path: result.path, value: result.text, previous: source });
 
         const found = inspect(source, result.text);
         if (found.length > 0) issues[result.path] = found;
@@ -720,17 +703,6 @@ export default function App() {
                   整卡翻譯
                 </button>
               ))}
-            {/*
-              Also in the header, because a per-section translation shows no
-              report at all and a whole-card one can be dismissed — and either
-              way what needs undoing is noticed while reading the card.
-            */}
-            {model && state.undo && (
-              <button onClick={undoTranslation} className="btn-ghost px-3" title={`還原「${state.undo.label}」之前的內容`}>
-                <Undo2 className="size-4" />
-                <span className="hidden sm:inline">還原</span>
-              </button>
-            )}
             {model && (
               <button onClick={() => setExportOpen(true)} className="btn-primary hidden px-4 sm:inline-flex">
                 <Download className="size-4" />
@@ -761,7 +733,7 @@ export default function App() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => {
-                      actions.restore(draftOffer.model, draftOffer.imageBytes, draftOffer.undo);
+                      actions.restore(draftOffer.model, draftOffer.imageBytes, draftOffer.reverts);
                       setDraftOffer(null);
                     }}
                     className="btn-ghost px-3 py-1.5 text-xs"
@@ -788,7 +760,6 @@ export default function App() {
             <TranslateReport
               report={report}
               onRetry={(paths) => void translateWholeCard(paths)}
-              onUndo={state.undo ? undoTranslation : undefined}
               onDismiss={() => setReport(null)}
               onJump={jumpToPath}
             />
@@ -836,6 +807,8 @@ export default function App() {
                   onTranslateField={translateField}
                   onTranslateGreeting={translateGreeting}
                   onTranslateLore={translateLoreEntry}
+                  reverts={state.reverts}
+                  onRevert={actions.revert}
                   glossary={{
                     meta: state.glossary,
                     usage,
@@ -953,6 +926,8 @@ function TabContent({
   onTranslateField,
   onTranslateGreeting,
   onTranslateLore,
+  reverts,
+  onRevert,
   glossary,
 }: {
   activeTab: string;
@@ -963,6 +938,8 @@ function TabContent({
   onTranslateField: (key: keyof CardFields) => void;
   onTranslateGreeting: (index: number) => void;
   onTranslateLore: (index: number) => void;
+  reverts: Record<string, SectionRevert>;
+  onRevert: (path: string) => void;
   glossary: GlossaryPanel;
 }) {
   if (activeTab in LONG_FIELDS) {
@@ -978,6 +955,8 @@ function TabContent({
         onChange={(value) => setField(key, value)}
         onTranslate={() => onTranslateField(key)}
         onCancel={() => translate.cancel(key)}
+        revert={reverts[key]}
+        onRevert={() => onRevert(key)}
       />
     );
   }
@@ -1006,6 +985,8 @@ function TabContent({
           onMove={(index, direction) => dispatch({ type: 'greeting.move', index, direction })}
           onTranslate={onTranslateGreeting}
           onCancel={(index) => translate.cancel(`greeting:${index}`)}
+          reverts={reverts}
+          onRevert={onRevert}
         />
       );
 
@@ -1025,6 +1006,8 @@ function TabContent({
           }
           onTranslate={onTranslateLore}
           onCancel={(index) => translate.cancel(`lore:${index}`)}
+          reverts={reverts}
+          onRevert={onRevert}
         />
       );
 

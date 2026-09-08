@@ -1,4 +1,4 @@
-import { AlertCircle, Check, Languages, Loader2, X, XCircle } from 'lucide-react';
+import { AlertCircle, Check, Languages, Loader2, Undo2, X, XCircle } from 'lucide-react';
 import { ReactNode, useEffect } from 'react';
 
 import type { TaskStatus } from '../hooks/useTranslate';
@@ -37,6 +37,39 @@ export function Banner({
  * Translate control. Deliberately always visible — the previous build hid these
  * behind `group-hover`, which on a touch device means "never".
  */
+/**
+ * Swap one section between the translation and what it replaced.
+ *
+ * Beside the translate button rather than collected somewhere central, because
+ * this is read as part of reading the field: the checks catch an echoed source
+ * and a refusal that announces itself, and everything else — a refusal phrased
+ * as prose, a rendering that is merely wrong — is noticed by whoever is reading
+ * the text. The way back has to be where they are.
+ *
+ * It swaps rather than restores, so pressing it twice is a no-op and a
+ * mis-click costs nothing.
+ */
+export function RevertButton({
+  reverted,
+  onRevert,
+  className,
+}: {
+  reverted: boolean;
+  onRevert: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      onClick={onRevert}
+      className={cn('btn-quiet', reverted && 'text-gold', className)}
+      title={reverted ? '把翻譯結果放回來' : '換回這一段翻譯前的內容'}
+    >
+      <Undo2 className="size-3.5" />
+      {reverted ? '取消還原' : '還原'}
+    </button>
+  );
+}
+
 export function TranslateButton({
   status,
   onTranslate,
