@@ -191,7 +191,8 @@ const systemPrompt = (options: TranslateOptions, pinned: GlossaryTerm[]) =>
 2. 絕對保留所有技術性格式與變數（如 {{char}}, {{user}}, <START>, {{original}} 等），不可翻譯或改寫。
 3. 保留原文的換行與段落結構。
 4. 絕不輸出任何解釋、開場白或是結尾語（例如：「這是一份翻譯...」）。
-5. 只允許輸出純粹的翻譯內容。${contextBlock(options.card, options.section)}${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
+5. 只允許輸出純粹的翻譯內容。
+6. 待翻譯內容以 """ 標示首尾，那是分隔符而非內容，輸出時不可保留。${contextBlock(options.card, options.section)}${styleBlock(options.styleNotes)}${glossaryBlock(pinned)}`;
 
 const MAX_ATTEMPTS = 3;
 /** Being throttled is worth more patience than a hiccup is. */
@@ -370,11 +371,39 @@ function refusedToTranslate(source: string, output: string): boolean {
   return TASK_TALK.test(output) && !TASK_TALK.test(source);
 }
 
-/** Strip a wrapper the model added despite being told not to. */
+/**
+ * A wrapper the model put around the translation, and the one it was handed.
+ *
+ * The source goes over fenced in `"""`, and a model that answers in the shape of
+ * what it was given hands that fence back around the translation. Both come off
+ * here, and only as a matched pair: a lone `"""` is left where the reader can
+ * see it, since nothing tells it apart from punctuation the text opens with.
+ */
+const WRAPPERS = [/^```(?:\w+)?\r?\n([\s\S]*?)\r?\n```$/, /^"""\r?\n?([\s\S]*?)\r?\n?"""$/];
+
+/**
+ * Strip a wrapper the model added despite being told not to.
+ *
+ * This runs before the refusal check, which is anchored at the start of the
+ * reply: a refusal that arrives wrapped is only recognisable once the wrapper is
+ * off, and one that is not recognised is written into the card as its
+ * translation.
+ */
 function cleanOutput(text: string): string {
   let out = text.trim();
-  const fence = out.match(/^```(?:\w+)?\n([\s\S]*?)\n```$/);
-  if (fence) out = fence[1].trim();
+
+  // Twice, since one pass leaves the inner half of a nested pair behind. An
+  // empty inside is not a wrapper — that is a reply with nothing in it, and it
+  // should reach the checks as what it is rather than as an empty section.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const before = out;
+    for (const wrapper of WRAPPERS) {
+      const inner = out.match(wrapper)?.[1]?.trim();
+      if (inner) out = inner;
+    }
+    if (out === before) break;
+  }
+
   return out;
 }
 

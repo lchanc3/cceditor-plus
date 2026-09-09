@@ -202,6 +202,52 @@ describe('translateText prompt', () => {
   });
 });
 
+describe('the wrapper the model hands back', () => {
+  const translate = (reply: string, source = 'Hello.') =>
+    translateText(fake(reply).provider, source, options);
+
+  it('tells the model the """ is a delimiter and not content', async () => {
+    const { provider, calls } = fake('譯文');
+    await translateText(provider, 'Hello.', options);
+    expect(system(calls[0])).toContain('分隔符');
+  });
+
+  it('takes off the """ fence the source was handed over in', async () => {
+    expect(await translate('"""\n第一行\n第二行\n"""')).toBe('第一行\n第二行');
+  });
+
+  it('takes it off when it sits on the same line as the text', async () => {
+    expect(await translate('"""譯文"""')).toBe('譯文');
+  });
+
+  it('takes off a code fence wrapped around the quotes', async () => {
+    expect(await translate('```\n"""\n譯文\n"""\n```')).toBe('譯文');
+  });
+
+  it('leaves a """ that only opens, which is not a wrapper', async () => {
+    // Nothing tells a half-wrapper apart from punctuation the text opens with,
+    // so it stays where whoever reads the card can see it.
+    expect(await translate('"""譯文')).toBe('"""譯文');
+  });
+
+  it('leaves quotes that fall inside the translation alone', async () => {
+    expect(await translate('第一行\n"""\n第二行')).toBe('第一行\n"""\n第二行');
+  });
+
+  it('does not empty the section when the fence is the whole reply', async () => {
+    expect(await translate('""""""')).toBe('""""""');
+  });
+
+  it('sees the refusal that arrives wrapped', async () => {
+    // The refusal check is anchored at the start of the reply, so the wrapper
+    // has to come off first or the apology is written into the card.
+    const error = await translate('"""\n很抱歉，我無法翻譯這段內容。\n"""').catch((e) => e);
+
+    expect(error).toBeInstanceOf(ProviderError);
+    expect((error as ProviderError).filtered).toBe(true);
+  });
+});
+
 describe('extractTerms', () => {
   it('asks for JSON at a low temperature', async () => {
     const { provider, calls } = fake('{"terms":[]}');
